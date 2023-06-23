@@ -11,6 +11,7 @@ class Training:
         self.epochs = training_dict['epochs']
         self.num_workers = training_dict['num_workers']
         self.batch_size = training_dict['batch_size']
+        self.balanced = training_dict['balanced']
         
 class Config:
     def __init__(self, conf_yaml: Dict) -> None:

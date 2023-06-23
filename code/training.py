@@ -1,9 +1,9 @@
 import argparse
 import datetime
+import os
 import sys
 import time
 from timeit import timeit
-import os
 
 import numpy as np
 import torch
@@ -11,8 +11,8 @@ import torch.nn as nn
 from data import LunaDataset
 from mlmodels.classifiers import base_cnn
 from torch.utils.data import DataLoader
-from utils.config import CONFIG
 from torch.utils.tensorboard import SummaryWriter
+from utils.config import CONFIG
 
 METRIX_LABEL_NDX=0
 METRICS_PRED_NDX=1
@@ -47,6 +47,7 @@ class LunaTrainingApp:
         
         self._init_tensorboard_writers()
         
+        
     def _init_model(self):
         
         """Helper method to instantiate ML model. 
@@ -80,14 +81,19 @@ class LunaTrainingApp:
         Returns:
             _type_: torch DataLoader with 
         """
+        
+        balance_ratio = 1 if CONFIG.training.balanced else None
+        
         if not self.dev:
             train_ds = LunaDataset(val_stride=10,
-                                   is_val_set=False)
+                                   is_val_set=False,
+                                   ratio=balance_ratio)
         else:
             EXAMPLE_UID = '1.3.6.1.4.1.14519.5.2.1.6279.6001.277445975068759205899107114231'
             train_ds = LunaDataset(val_stride=10,
                                    is_val_set=False,
-                                   series_uid=EXAMPLE_UID)            
+                                   series_uid=EXAMPLE_UID,
+                                   ratio=balance_ratio)            
         # TODO: it errors on mac when choose many workers due to some pickle error. 
         # Solve it in order to speed up training.
         train_dl = DataLoader(train_ds, 

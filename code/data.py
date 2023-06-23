@@ -1,19 +1,20 @@
-from collections import namedtuple
-from functools import lru_cache
+import copy
+import csv
 import glob
 import os
-import csv
-import SimpleITK as sitk
+import random
+from collections import namedtuple
+from functools import lru_cache
 from typing import List, NamedTuple, Tuple
-import numpy as np
-from numpy.typing import ArrayLike
+
 import matplotlib.pyplot as plt
-from torch.utils.data import Dataset, DataLoader
+import numpy as np
+import SimpleITK as sitk
 import torch
-import copy
+from numpy.typing import ArrayLike
+from torch.utils.data import DataLoader, Dataset
 from utils.disk import getCache
 from utils.viz import IMG
-
 
 raw_cache = getCache('ct_chunk_raw')
 
@@ -222,6 +223,7 @@ class LunaDataset(Dataset):
     def __init__(self, 
                  val_stride: int = 0,
                  is_val_set: bool = None,
+                 ratio: int = 0,
                  series_uid=None) -> None:
         super().__init__()
         # Copy the return value of get_candidate_info_list func so the 
@@ -236,12 +238,49 @@ class LunaDataset(Dataset):
         elif val_stride > 0:
             del self.candidates_info[::val_stride]
             assert self.candidates_info
+        # variables useful for balancing the dataset
+        self.ratio = ratio
+        self.negative_list = [nt for nt in self.candidates_info if not nt.is_nodule]
+        self.positive_list = [nt for nt in self.candidates_info if nt.is_nodule]
     
     def __len__(self):
         return len(self.candidates_info)
     
-    def __getitem__(self, ix):
-        candidate_info = self.candidates_info[ix]
+    def shuffle_samples(self):
+        if self.ratio:
+            random.shuffle(self.negative_list)
+            random.shuffle(self.positive_list)
+    
+    def __getitem__(self, ix: int) -> Tuple:
+        """
+        If order to balance the dataset we implement artificially chaning the order of dataset ix 
+        which is pulled from Dataset. E.g. in case we want to have 2:1 ratio of negative to positive,
+        we would take samples in following order:
+        DS Ix   0 1 2 3 4 5 6 7 8 9 ...
+        Label   + - - + - - + - - + 
+        Pos Ix  0     1     2     3
+        Neg Ix    0 1   2 3   4 5 
+        So the method is literally jumping over ix in order to receive this ratio. In order for not sampling
+        the same few first examples of majority class. Original lists are shuffled with each opoch. 
+        
+        Args:
+            ix (int): Iterator goes from ix=0 to len(dataset)
+
+        Returns:
+            Tuple: with 4 elements chategorizing each sample: (X, y, uid, center_irc)
+        """
+        if self.ratio:
+            pos_ix = ix // (self.ratio + 1)
+            if ix % (self.ratio + 1):
+                neg_ix = ix - 1 - pos_ix
+                neg_ix %= len(self.negative_list)
+                candidate_info = self.negative_list[neg_ix]
+            else:
+                pos_ix %= len(self.positive_list)
+                candidate_info = self.positive_list[pos_ix]
+        else:
+            candidate_info = self.candidates_info[ix]
+            
         width_irc = (32, 48, 48)
         
         ct_chunk, center_irc = get_ct_raw_candidate(candidate_info.series_uid,
