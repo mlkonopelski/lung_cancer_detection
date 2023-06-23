@@ -128,16 +128,30 @@ class LunaTrainingApp:
         neg_count = int(neg_label_mask.sum())
         pos_count = int(pos_label_mask.sum())
         
-        neg_correct = int((neg_label_mask & neg_pred_mask).sum())
-        pos_correct = int((pos_label_mask & pos_pred_mask).sum())
+        true_neg_count = int((neg_label_mask & neg_pred_mask).sum())
+        true_pos_count = int((pos_label_mask & pos_pred_mask).sum())
+        
+        false_pos_count = neg_count - true_neg_count
+        false_neg_count = pos_count - true_pos_count
+        
+        if true_pos_count != 0:
+            precision = true_pos_count / np.float32(true_pos_count + false_pos_count)
+            recall = true_pos_count / np.float32(true_pos_count + false_neg_count)
+            f1_score = 2 * (precision * recall) / (precision + recall)
+        else:
+            precision, recall, f1_score = 0, 0, 0
         
         metrics_dict = {}
         metrics_dict['loss/all'] = metrics_t[METRICS_LOSS_NDX].mean()
         metrics_dict['loss/neg'] = metrics_t[METRICS_LOSS_NDX, neg_label_mask].mean()
         metrics_dict['loss/pos'] = metrics_t[METRICS_LOSS_NDX, pos_label_mask].mean()
-        metrics_dict['correct/all'] = (pos_correct + neg_correct) / np.float32(metrics_t.shape[1]) * 100
-        metrics_dict['correct/neg'] = neg_correct / neg_count * 100
-        metrics_dict['correct/pos'] = pos_correct / pos_count * 100
+        metrics_dict['correct/all'] = (true_pos_count + true_neg_count) / np.float32(metrics_t.shape[1]) * 100
+        metrics_dict['correct/neg'] = true_neg_count / neg_count * 100
+        metrics_dict['correct/pos'] = true_pos_count / pos_count * 100
+        
+        metrics_dict['pr/precision'] = precision
+        metrics_dict['pr/recall'] = recall
+        metrics_dict['pr/f1'] = f1_score
         
         for key, value in metrics_dict.items():
             if mode_str == 'train':
