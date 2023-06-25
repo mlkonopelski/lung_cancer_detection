@@ -5,3 +5,9 @@ training:
   batch_size: 8
   num_workers: 1
   balanced: True
+  augmentation:
+    flip: True
+    offset: 0.1
+    scale: 0.2
+    rotation: True
+    noise: 25.0

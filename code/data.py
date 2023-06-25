@@ -1,16 +1,18 @@
 import copy
 import csv
 import glob
+import math
 import os
 import random
 from collections import namedtuple
 from functools import lru_cache
-from typing import List, NamedTuple, Tuple
+from typing import Dict, List, NamedTuple, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import SimpleITK as sitk
 import torch
+import torch.nn.functional as F
 from numpy.typing import ArrayLike
 from torch.utils.data import DataLoader, Dataset
 from utils.disk import getCache
@@ -218,12 +220,77 @@ def get_ct_raw_candidate(series_uid: str, center_xyz: NamedTuple, width_irc: Tup
     ct_chunk, center_irc = ct.get_raw_candidate(center_xyz, width_irc)
     return ct_chunk, center_irc
 
+def validate_user_augmentations(augmentations: Dict) -> Dict:
+    return augmentations
+
+def get_ct_augmented_candidate(
+    augmentation: Dict,
+    series_uid: str,
+    center_xyz: NamedTuple,
+    width_irc: Tuple,
+    use_cache: bool = True
+):
+    if use_cache:
+        ct_chunk, center_irc = get_ct_raw_candidate(series_uid, center_xyz, width_irc)
+    else:
+        ct = get_ct(series_uid)
+        ct_chunk, center_irc = ct.get_raw_candidate(center_xyz, width_irc)
+    ct_chunk = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
+    
+    transform_t = torch.eye(n=4)
+    
+    augmentation = validate_user_augmentations(augmentation)
+    
+    for i in range(3):
+        if 'flip' in augmentation:
+            if random.random() > 0.5:
+                transform_t[i, i] *= -1
+        if 'offset' in augmentation:
+            offset_float = augmentation['offest']
+            random_float = (random.random() * 2 - 1)
+            transform_t[i, 3] = offset_float * random_float            
+        if 'scale' in augmentation:
+            scale_float = augmentation['scale']
+            random_float = (random.random() * 2 -1)
+            transform_t[i, i] = 1.0 + scale_float * random_float
+        if 'rotate' in augmentation:
+            angle_rad = random.random() * math.pi * 2
+            s = math.sin(angle_rad)
+            c = math.cos(angle_rad)
+            rotation_t = torch.tensor([
+                [c, -s, 0, 0],
+                [s, c, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1]
+            ])
+            transform_t @= rotation_t
+        if 'noise' in augmentation:
+            noise_t = torch.randn_like(augmented_chunk)
+            noise_t *= augmentation['noise']
+            augmented_chunk += noise_t
+    
+    affine_t = F.affine_grid(
+        transform_t[:3].unsqueeze(0).to(torch.float32),
+        ct_chunk.size(),
+        align_corners=False,
+    )
+    augmented_chunk = F.grid_sample(
+        input=ct_chunk,
+        grid=affine_t,
+        padding_mode='border',
+        align_corners=False,
+    ).to('cpu')
+
+    return augmented_chunk[0], center_irc
+    
+        
 
 class LunaDataset(Dataset):
     def __init__(self, 
                  val_stride: int = 0,
                  is_val_set: bool = None,
                  ratio: int = 0,
+                 augmentations: Dict = {},
                  series_uid=None) -> None:
         super().__init__()
         # Copy the return value of get_candidate_info_list func so the 
@@ -238,6 +305,9 @@ class LunaDataset(Dataset):
         elif val_stride > 0:
             del self.candidates_info[::val_stride]
             assert self.candidates_info
+        # help with over
+        self.augmentations = augmentations
+        self._validate_augmentations()
         # variables useful for balancing the dataset
         self.ratio = ratio
         self.negative_list = [nt for nt in self.candidates_info if not nt.is_nodule]
@@ -245,7 +315,28 @@ class LunaDataset(Dataset):
     
     def __len__(self):
         return len(self.candidates_info)
-    
+        
+    def _validate_augmentations(self):
+        user_augmentations = self.augmentations.keys()
+        expected_augmentations = set(['flip', 'offset', 'scale', 'rotation', 'noise'])
+        unsupported_augmentations = set(user_augmentations).difference(expected_augmentations)
+        if unsupported_augmentations:
+            for unsupported_augmentation in list(unsupported_augmentations):
+                self.augmentations.pop(unsupported_augmentation)
+                raise Warning(f'Augmentation: {unsupported_augmentation} is not supported and will be removed from list')
+        if 'scale' in user_augmentations:
+            if self.augmentations['scale'] <0 or self.augmentations['scale'] > 1:
+                self.augmentations.pop('scale')
+                raise Warning(f'Scaling ratio out of range <0, 1> and will be removed from list')
+        if 'offset' in user_augmentations:
+            if self.augmentations['offset'] <0 or self.augmentations['offset'] > 1:
+                self.augmentations.pop('offset')
+                raise Warning(f'Offseting ratio out of range <0, 1> and will be removed from list')
+        if 'noise' in user_augmentations:
+            if self.augmentations['noise'] <= 0 or self.augmentations['noise'] >= 100:
+                self.augmentations.pop('noise')
+                raise Warning(f'Noise ratio out of range <0, 100> and will be removed from list')
+
     def shuffle_samples(self):
         if self.ratio:
             random.shuffle(self.negative_list)
@@ -280,16 +371,14 @@ class LunaDataset(Dataset):
                 candidate_info = self.positive_list[pos_ix]
         else:
             candidate_info = self.candidates_info[ix]
-            
+
         width_irc = (32, 48, 48)
-        
-        ct_chunk, center_irc = get_ct_raw_candidate(candidate_info.series_uid,
-                                                    candidate_info.center_xyz,
-                                                    width_irc)
-        
-        ct_chunk = torch.from_numpy(ct_chunk)
-        ct_chunk = ct_chunk.to(dtype=torch.float32)
-        ct_chunk = ct_chunk.unsqueeze(0)
+
+        ct_chunk, center_irc = get_ct_augmented_candidate(augmentation={'flip': True},
+                                                          series_uid=candidate_info.series_uid,
+                                                          center_xyz=candidate_info.center_xyz,
+                                                          width_irc=width_irc
+                                                          )
         
         label = torch.tensor([
             not candidate_info.is_nodule,
@@ -335,8 +424,11 @@ if __name__ == '__main__':
     #                             add_rectangular=[center_irc, round(example_candidate.diameter_mm)])
     
     # Test Luna Dataset
+    from utils.config import CONFIG
+
     train_ds = LunaDataset(val_stride=10,
-                            is_val_set=False)
+                            is_val_set=False,
+                            augmentations=CONFIG.training.augmentation)
     
     print(f'LEN of LUNA DATASET: {len(train_ds)}')
     

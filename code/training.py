@@ -83,17 +83,20 @@ class LunaTrainingApp:
         """
         
         balance_ratio = 1 if CONFIG.training.balanced else None
+        augmentation_dict = CONFIG.training.augmentation if CONFIG.training.augmentation else {}
         
         if not self.dev:
             train_ds = LunaDataset(val_stride=10,
                                    is_val_set=False,
-                                   ratio=balance_ratio)
+                                   ratio=balance_ratio,
+                                   augmentations=augmentation_dict)
         else:
             EXAMPLE_UID = '1.3.6.1.4.1.14519.5.2.1.6279.6001.277445975068759205899107114231'
             train_ds = LunaDataset(val_stride=10,
                                    is_val_set=False,
                                    series_uid=EXAMPLE_UID,
-                                   ratio=balance_ratio)            
+                                   ratio=balance_ratio,
+                                   augmentations=augmentation_dict)            
         # TODO: it errors on mac when choose many workers due to some pickle error. 
         # Solve it in order to speed up training.
         train_dl = DataLoader(train_ds, 

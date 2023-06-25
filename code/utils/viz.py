@@ -1,8 +1,10 @@
+from typing import Dict, List, NamedTuple, Optional, Union
+
+import cv2
+import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 from numpy.typing import ArrayLike
-from typing import List, Optional, NamedTuple
-import matplotlib.patches as patches
-import cv2
+
 
 class IMG:
     """
@@ -79,3 +81,8 @@ class IMG:
                 
         plt.show()
     
+    def img_by_augmentation(img, augmentations: Union[None, Dict] = None):
+        # TODO: Create visualizations of different augmentations
+        # idea: original picture in left upper corner and depending on the amount of augmentations 
+        # create a rectangular grid. Also include options to default
+        ...
