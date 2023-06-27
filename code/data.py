@@ -220,8 +220,6 @@ def get_ct_raw_candidate(series_uid: str, center_xyz: NamedTuple, width_irc: Tup
     ct_chunk, center_irc = ct.get_raw_candidate(center_xyz, width_irc)
     return ct_chunk, center_irc
 
-def validate_user_augmentations(augmentations: Dict) -> Dict:
-    return augmentations
 
 def get_ct_augmented_candidate(
     augmentation: Dict,
@@ -239,14 +237,12 @@ def get_ct_augmented_candidate(
     
     transform_t = torch.eye(n=4)
     
-    augmentation = validate_user_augmentations(augmentation)
-    
     for i in range(3):
         if 'flip' in augmentation:
             if random.random() > 0.5:
                 transform_t[i, i] *= -1
         if 'offset' in augmentation:
-            offset_float = augmentation['offest']
+            offset_float = augmentation['offset']
             random_float = (random.random() * 2 - 1)
             transform_t[i, 3] = offset_float * random_float            
         if 'scale' in augmentation:
@@ -265,9 +261,9 @@ def get_ct_augmented_candidate(
             ])
             transform_t @= rotation_t
         if 'noise' in augmentation:
-            noise_t = torch.randn_like(augmented_chunk)
+            noise_t = torch.randn_like(ct_chunk)
             noise_t *= augmentation['noise']
-            augmented_chunk += noise_t
+            ct_chunk += noise_t
     
     affine_t = F.affine_grid(
         transform_t[:3].unsqueeze(0).to(torch.float32),
@@ -283,7 +279,30 @@ def get_ct_augmented_candidate(
 
     return augmented_chunk[0], center_irc
     
-        
+def validate_augmentations(augmentations: Dict) -> Dict:
+    
+    user_augmentations = augmentations.keys()
+    expected_augmentations = set(['flip', 'offset', 'scale', 'rotation', 'noise'])
+    unsupported_augmentations = set(user_augmentations).difference(expected_augmentations)
+    if unsupported_augmentations:
+        for unsupported_augmentation in list(unsupported_augmentations):
+            augmentations.pop(unsupported_augmentation)
+            raise Warning(f'Augmentation: {unsupported_augmentation} is not supported and will be removed from list')
+    if 'scale' in user_augmentations:
+        if augmentations['scale'] <0 or augmentations['scale'] > 1:
+            augmentations.pop('scale')
+            raise Warning(f'Scaling ratio out of range <0, 1> and will be removed from list')
+    if 'offset' in user_augmentations:
+        if augmentations['offset'] <0 or augmentations['offset'] > 1:
+            augmentations.pop('offset')
+            raise Warning(f'Offseting ratio out of range <0, 1> and will be removed from list')
+    if 'noise' in user_augmentations:
+        if augmentations['noise'] <= 0 or augmentations['noise'] >= 100:
+            augmentations.pop('noise')
+            raise Warning(f'Noise ratio out of range <0, 100> and will be removed from list')
+
+    return augmentations
+    
 
 class LunaDataset(Dataset):
     def __init__(self, 
@@ -306,8 +325,7 @@ class LunaDataset(Dataset):
             del self.candidates_info[::val_stride]
             assert self.candidates_info
         # help with over
-        self.augmentations = augmentations
-        self._validate_augmentations()
+        self.augmentations = validate_augmentations(augmentations)
         # variables useful for balancing the dataset
         self.ratio = ratio
         self.negative_list = [nt for nt in self.candidates_info if not nt.is_nodule]
@@ -315,27 +333,6 @@ class LunaDataset(Dataset):
     
     def __len__(self):
         return len(self.candidates_info)
-        
-    def _validate_augmentations(self):
-        user_augmentations = self.augmentations.keys()
-        expected_augmentations = set(['flip', 'offset', 'scale', 'rotation', 'noise'])
-        unsupported_augmentations = set(user_augmentations).difference(expected_augmentations)
-        if unsupported_augmentations:
-            for unsupported_augmentation in list(unsupported_augmentations):
-                self.augmentations.pop(unsupported_augmentation)
-                raise Warning(f'Augmentation: {unsupported_augmentation} is not supported and will be removed from list')
-        if 'scale' in user_augmentations:
-            if self.augmentations['scale'] <0 or self.augmentations['scale'] > 1:
-                self.augmentations.pop('scale')
-                raise Warning(f'Scaling ratio out of range <0, 1> and will be removed from list')
-        if 'offset' in user_augmentations:
-            if self.augmentations['offset'] <0 or self.augmentations['offset'] > 1:
-                self.augmentations.pop('offset')
-                raise Warning(f'Offseting ratio out of range <0, 1> and will be removed from list')
-        if 'noise' in user_augmentations:
-            if self.augmentations['noise'] <= 0 or self.augmentations['noise'] >= 100:
-                self.augmentations.pop('noise')
-                raise Warning(f'Noise ratio out of range <0, 100> and will be removed from list')
 
     def shuffle_samples(self):
         if self.ratio:
@@ -374,7 +371,7 @@ class LunaDataset(Dataset):
 
         width_irc = (32, 48, 48)
 
-        ct_chunk, center_irc = get_ct_augmented_candidate(augmentation={'flip': True},
+        ct_chunk, center_irc = get_ct_augmented_candidate(augmentation=self.augmentations,
                                                           series_uid=candidate_info.series_uid,
                                                           center_xyz=candidate_info.center_xyz,
                                                           width_irc=width_irc
@@ -432,6 +429,26 @@ if __name__ == '__main__':
     
     print(f'LEN of LUNA DATASET: {len(train_ds)}')
     
+    # Example of pictures and different augmentations.
+    ct_chunk_original, _ = img.get_raw_candidate(center_xyz=example_candidate.center_xyz, 
+                                                 width_irc=width_irc)
+    ct_chunk_augmented, _ = get_ct_augmented_candidate(augmentation={'flip': True}, 
+                                                       series_uid=EXAMPLE_UID,
+                                                       center_xyz=example_candidate.center_xyz,
+                                                       width_irc=width_irc,
+                                                       use_cache=False)
+    # IMG.single_image(ct_chunk_original[16])
+    # IMG.single_image(ct_chunk_augmented[0][16])
+    
+    from utils.config import CONFIG
+    IMG.visualize_augmentations(func=get_ct_augmented_candidate,
+                                series_uid=EXAMPLE_UID,
+                                center_xyz=example_candidate.center_xyz,
+                                width_irc=width_irc,
+                                augmentations=CONFIG.training.augmentation)
+    
+    
+    # Loading DAtasets to DataLoader
     train_dl = DataLoader(train_ds, 
                         batch_size=8,
                         shuffle=True,

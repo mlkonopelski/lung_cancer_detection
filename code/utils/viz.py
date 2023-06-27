@@ -18,6 +18,41 @@ class IMG:
             sub.set_title(img_title)
         sub.imshow(img_array, interpolation='nearest')
         plt.show()
+    
+    @staticmethod
+    def visualize_augmentations(func, series_uid, center_xyz, width_irc, augmentations: Dict):
+        viz_count = len(augmentations.keys())
+        if viz_count < 4:
+            shape = (1, viz_count + 1)
+        elif viz_count >= 4 and viz_count < 8:
+            shape = (2, int((viz_count + 1)/ 2))
+        elif viz_count >= 8 and viz_count < 12:
+            shape (3, viz_count + 1)
+        else:
+            raise Exception('Not developed for augmentations > 11')
+        
+        fig = plt.figure(figsize=(10, 8))
+        
+        # first image 
+        img_chunk, _ = func(augmentation={}, 
+                            series_uid=series_uid,
+                            center_xyz=center_xyz,
+                            width_irc=width_irc,
+                            use_cache=False)
+        sub = fig.add_subplot(shape[0], shape[1], 1)
+        sub.set_title(label='Original')
+        sub.imshow(X=img_chunk[0][16], interpolation='nearest')
+        
+        # All augmentations
+        for i, (key, value) in enumerate(augmentations.items()):
+             img_chunk, _ = func(augmentation={key: value}, 
+                            series_uid=series_uid,
+                            center_xyz=center_xyz,
+                            width_irc=width_irc,
+                            use_cache=False)
+             sub = fig.add_subplot(shape[0], shape[1], i+2)
+             sub.set_title(label=f'{key}: {value}')
+             sub.imshow(X=img_chunk[0][16], interpolation='nearest')            
         
     def img_by_chunk_sidebyside(img: ArrayLike,
                                 chunk: ArrayLike, 
