@@ -4,13 +4,13 @@ import torch
 import torchinfo
 
 class ContractCNN(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, conv_kernel: int = 3) -> None:
+    def __init__(self, in_channels: int, out_channels: int, conv_kernel: int = 3, conv_padding: int = 0) -> None:
         super(ContractCNN, self).__init__()
         
         self.max_pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=conv_kernel)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=conv_kernel, padding=conv_padding)
         self.relu = nn.ReLU()
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=conv_kernel)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=conv_kernel, padding=conv_padding)
         
     def forward(self, x):
         out = self.max_pool(x)
@@ -21,12 +21,12 @@ class ContractCNN(nn.Module):
         return out
     
 class ExpandCNN(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, transpose_conv_kernel: int = 2, transpose_conv_stride: int = 2) -> None:
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, conv_padding: int = 0,  transpose_conv_kernel: int = 2, transpose_conv_stride: int = 2) -> None:
         super(ExpandCNN, self).__init__()
         
-        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size)
+        self.conv1 = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=conv_padding)
         self.relu = nn.ReLU()
-        self.conv2 = nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=kernel_size)
+        self.conv2 = nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=kernel_size, padding=conv_padding)
         self.expand_conv = nn.ConvTranspose2d(in_channels=out_channels, out_channels=out_channels, kernel_size=transpose_conv_kernel, stride=transpose_conv_stride)
         
     def forward(self, x):
@@ -97,7 +97,62 @@ class UNET(nn.Module):
         out = self.expand_conv_layer5(e4)
 
         return out
+
+
+class UNETLuna(nn.Module):
+    def __init__(self, output_channels: int = 2) -> None:
+        super(UNETLuna, self).__init__()
+        
+        # BatchNorm2d: This way, we won’t have to normalize the data ourselves in the dataset; and, more importantly, 
+        # we will get normalization statistics (read mean and standard deviation) estimated over individual batches. 
+        # This means when a batch is dull for some reason--that is, when there is nothing to see in all the CT crops fed into the network--it will be scaled more strongly.
+        
+        #self._init_weight()
+        
+        self.batch_norm = nn.BatchNorm2d(num_features=1)
+
+        self.contract_conv_layer1 = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=3, padding=1), 
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+        )
+        self.contract_conv_layer2 = ContractCNN(in_channels=64, out_channels=128, conv_padding=1) 
+        self.contract_conv_layer3 = ContractCNN(in_channels=128, out_channels=256, conv_padding=1)
+        self.contract_conv_layer4 = ContractCNN(in_channels=256, out_channels=512, conv_padding=1)
+        self.contract_conv_layer5 = ContractCNN(in_channels=512, out_channels=1024, conv_padding=1)
+        
+        self.expand_conv_layer1 = nn.ConvTranspose2d(in_channels=1024, out_channels=512, kernel_size=2, stride=2)
+        self.expand_conv_layer2 = ExpandCNN(in_channels=1024, out_channels=256, conv_padding=1)
+        self.expand_conv_layer3 = ExpandCNN(in_channels=512, out_channels=128, conv_padding=1)
+        self.expand_conv_layer4 = ExpandCNN(in_channels=256, out_channels=64, conv_padding=1)
+        self.expand_conv_layer5 = nn.Sequential(
+            nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels=64, out_channels=output_channels, kernel_size=1)
+        )
+        
+        self.sigmoid = nn.Sigmoid()
     
+    def _init_weight():
+        ...
+     
+    def forward(self, x):
+        
+        x_norm = self.batch_norm(x)
+        c1 = self.contract_conv_layer1(x_norm) 
+        c2 = self.contract_conv_layer2(c1)
+        c3 = self.contract_conv_layer3(c2)
+        c4 = self.contract_conv_layer4(c3)
+        c5 = self.contract_conv_layer5(c4)
+        
+        e1 = torch.cat([c4, self.expand_conv_layer1(c5)], dim=1)
+        e2 = torch.cat([c3, self.expand_conv_layer2(e1)], dim=1)
+        e3 = torch.cat([c2,  self.expand_conv_layer3(e2)], dim=1)
+        e4 = torch.cat([c1,  self.expand_conv_layer4(e3)], dim=1)
+        e5 = self.expand_conv_layer5(e4)
+        out = self.sigmoid(e5)
+        return out
+
 
 if __name__ == '__main__':
      
@@ -168,4 +223,71 @@ if __name__ == '__main__':
 # Estimated Total Size (MB): 1105.06
 # ==========================================================================================
     
+    unet_symmetrical = UNETLuna(output_channels=1)
+    torchinfo.summary(unet_symmetrical, input_size=(1, 1, 512, 512))
     
+# ==========================================================================================
+# Layer (type:depth-idx)                   Output Shape              Param #
+# ==========================================================================================
+# UNETLuna                                 [1, 1, 512, 512]          --
+# ├─BatchNorm2d: 1-1                       [1, 1, 512, 512]          2
+# ├─Sequential: 1-2                        [1, 64, 512, 512]         --
+# │    └─Conv2d: 2-1                       [1, 64, 512, 512]         640
+# │    └─ReLU: 2-2                         [1, 64, 512, 512]         --
+# │    └─Conv2d: 2-3                       [1, 64, 512, 512]         36,928
+# ├─ContractCNN: 1-3                       [1, 128, 256, 256]        --
+# │    └─MaxPool2d: 2-4                    [1, 64, 256, 256]         --
+# │    └─Conv2d: 2-5                       [1, 128, 256, 256]        73,856
+# │    └─ReLU: 2-6                         [1, 128, 256, 256]        --
+# │    └─Conv2d: 2-7                       [1, 128, 256, 256]        147,584
+# │    └─ReLU: 2-8                         [1, 128, 256, 256]        --
+# ├─ContractCNN: 1-4                       [1, 256, 128, 128]        --
+# │    └─MaxPool2d: 2-9                    [1, 128, 128, 128]        --
+# │    └─Conv2d: 2-10                      [1, 256, 128, 128]        295,168
+# │    └─ReLU: 2-11                        [1, 256, 128, 128]        --
+# │    └─Conv2d: 2-12                      [1, 256, 128, 128]        590,080
+# │    └─ReLU: 2-13                        [1, 256, 128, 128]        --
+# ├─ContractCNN: 1-5                       [1, 512, 64, 64]          --
+# │    └─MaxPool2d: 2-14                   [1, 256, 64, 64]          --
+# │    └─Conv2d: 2-15                      [1, 512, 64, 64]          1,180,160
+# │    └─ReLU: 2-16                        [1, 512, 64, 64]          --
+# │    └─Conv2d: 2-17                      [1, 512, 64, 64]          2,359,808
+# │    └─ReLU: 2-18                        [1, 512, 64, 64]          --
+# ├─ContractCNN: 1-6                       [1, 1024, 32, 32]         --
+# │    └─MaxPool2d: 2-19                   [1, 512, 32, 32]          --
+# │    └─Conv2d: 2-20                      [1, 1024, 32, 32]         4,719,616
+# │    └─ReLU: 2-21                        [1, 1024, 32, 32]         --
+# │    └─Conv2d: 2-22                      [1, 1024, 32, 32]         9,438,208
+# │    └─ReLU: 2-23                        [1, 1024, 32, 32]         --
+# ├─ConvTranspose2d: 1-7                   [1, 512, 64, 64]          2,097,664
+# ├─ExpandCNN: 1-8                         [1, 256, 128, 128]        --
+# │    └─Conv2d: 2-24                      [1, 256, 64, 64]          2,359,552
+# │    └─ReLU: 2-25                        [1, 256, 64, 64]          --
+# │    └─Conv2d: 2-26                      [1, 256, 64, 64]          590,080
+# │    └─ConvTranspose2d: 2-27             [1, 256, 128, 128]        262,400
+# ├─ExpandCNN: 1-9                         [1, 128, 256, 256]        --
+# │    └─Conv2d: 2-28                      [1, 128, 128, 128]        589,952
+# │    └─ReLU: 2-29                        [1, 128, 128, 128]        --
+# │    └─Conv2d: 2-30                      [1, 128, 128, 128]        147,584
+# │    └─ConvTranspose2d: 2-31             [1, 128, 256, 256]        65,664
+# ├─ExpandCNN: 1-10                        [1, 64, 512, 512]         --
+# │    └─Conv2d: 2-32                      [1, 64, 256, 256]         147,520
+# │    └─ReLU: 2-33                        [1, 64, 256, 256]         --
+# │    └─Conv2d: 2-34                      [1, 64, 256, 256]         36,928
+# │    └─ConvTranspose2d: 2-35             [1, 64, 512, 512]         16,448
+# ├─Sequential: 1-11                       [1, 1, 512, 512]          --
+# │    └─Conv2d: 2-36                      [1, 64, 512, 512]         73,792
+# │    └─Conv2d: 2-37                      [1, 64, 512, 512]         36,928
+# │    └─Conv2d: 2-38                      [1, 1, 512, 512]          65
+# ├─Sigmoid: 1-12                          [1, 1, 512, 512]          --
+# ==========================================================================================
+# Total params: 25,266,627
+# Trainable params: 25,266,627
+# Non-trainable params: 0
+# Total mult-adds (G): 154.66
+# ==========================================================================================
+# Input size (MB): 1.05
+# Forward/backward pass size (MB): 1161.82
+# Params size (MB): 101.07
+# Estimated Total Size (MB): 1263.94
+# ==========================================================================================
