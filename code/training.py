@@ -8,7 +8,7 @@ from timeit import timeit
 import numpy as np
 import torch
 import torch.nn as nn
-from data import LunaDataset
+from data import Luna3DClassificationDataset
 from mlmodels.classifiers import base_cnn
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -86,13 +86,13 @@ class LunaTrainingApp:
         augmentation_dict = CONFIG.training.augmentation if CONFIG.training.augmentation else {}
         
         if not self.dev:
-            train_ds = LunaDataset(val_stride=10,
+            train_ds = Luna3DClassificationDataset(val_stride=10,
                                    is_val_set=False,
                                    ratio=balance_ratio,
                                    augmentations=augmentation_dict)
         else:
             EXAMPLE_UID = '1.3.6.1.4.1.14519.5.2.1.6279.6001.277445975068759205899107114231'
-            train_ds = LunaDataset(val_stride=10,
+            train_ds = Luna3DClassificationDataset(val_stride=10,
                                    is_val_set=False,
                                    series_uid=EXAMPLE_UID,
                                    ratio=balance_ratio,
@@ -109,11 +109,11 @@ class LunaTrainingApp:
         
     def _init_val_dl(self):
         if not self.dev:
-            val_ds = LunaDataset(val_stride=10,
+            val_ds = Luna3DClassificationDataset(val_stride=10,
                                    is_val_set=True)
         else:
             EXAMPLE_UID = '1.3.6.1.4.1.14519.5.2.1.6279.6001.277445975068759205899107114231'
-            val_ds = LunaDataset(val_stride=10,
+            val_ds = Luna3DClassificationDataset(val_stride=10,
                                    is_val_set=True,
                                    series_uid=EXAMPLE_UID)       
         val_dl = DataLoader(val_ds,
