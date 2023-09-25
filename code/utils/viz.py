@@ -4,7 +4,7 @@ import cv2
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 from numpy.typing import ArrayLike
-
+import torch
 
 class IMG:
     """
@@ -121,3 +121,13 @@ class IMG:
         # idea: original picture in left upper corner and depending on the amount of augmentations 
         # create a rectangular grid. Also include options to default
         ...
+    
+    @staticmethod
+    def visualize_mask(img_array, mask_array):
+        fig = plt.figure(figsize=(8, 8))
+        sub = fig.add_subplot(1, 1, 1)
+        sub.imshow(img_array, cmap='gray', interpolation='nearest')
+        plt.imshow(mask_array.to(dtype=torch.float), cmap='bwr', alpha=0.5)
+        plt.show()
+        
+        

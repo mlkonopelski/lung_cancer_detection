@@ -28,3 +28,11 @@ There are multiple changes to original UNET architecture in order to better fit 
 1. We want to have the same output size of network as input herefore each convolution block will have `padding=1` 
 1. We output 1-dim array with values <0, 1> therefore we add `Sigmoid` layer at the end
 1. Add the beggining each input array gets normalized for better learning of network. 
+
+
+## Tricks to make it work
+1. We want use full 512x512 mask as input for training because this dataset is highly imbalanced. 
+True values consits only little percentage of all cells of interested. 
+Therefore model will be trained on 64x64 mini crops around nodule as UNET is flexible on dimensions and 
+learn mostly weghts on feature maps. Also this way we'are goinf to add naturally augmentation. 
+1. 

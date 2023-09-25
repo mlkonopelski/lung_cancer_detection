@@ -18,10 +18,10 @@ from torch.utils.data import DataLoader, Dataset
 from utils.disk import getCache
 from utils.viz import IMG
 
-raw_cache = getCache('ct_chunk_raw')
+raw_cache = getCache('ct_chunk_raw_new')
 
 CandidateInfo = namedtuple(typename='candidate_info_tupple',
-                           field_names='is_nodule, diameter_mm, series_uid, center_xyz')
+                           field_names='is_nodule, has_annotation, is_malignant, diameter_mm, series_uid, center_xyz')
 
 @lru_cache(1)
 def get_candidate_info_list(require_on_disk: bool = True) -> List[NamedTuple]:
@@ -61,6 +61,26 @@ def get_candidate_info_list(require_on_disk: bool = True) -> List[NamedTuple]:
 
     candidates_info = []
     
+    # This file is prepared by authors and include removed duplication of certain nodule localisations
+    with open('.data/annotations_with_malignancy.csv') as f:
+        for row in list(csv.reader(f))[1:]:
+            series_uid = row[0]
+            if series_uid not in present_on_disk and require_on_disk:
+                continue
+            annotation_center_xyz = tuple([float(x) for x in row[1:4]])
+            annotationDiameter_mm = float(row[4])
+            is_malignant = {'False': False, 'True': True}[row[5]]
+            candidates_info.append(
+            CandidateInfo(
+                True, # is_nodule,
+                True, # has_annotation
+                is_malignant,
+                annotationDiameter_mm,
+                series_uid,
+                annotation_center_xyz,
+            )
+            )
+    
     with open('.data/candidates.csv', 'r') as f:
         for row in list(csv.reader(f))[1:]:
             series_uid = row[0]
@@ -84,19 +104,33 @@ def get_candidate_info_list(require_on_disk: bool = True) -> List[NamedTuple]:
                         candidate_diameter_mm = annotation_diameter_mm
                         break
                     
-            candidates_info.append(
-                CandidateInfo(
-                    is_nodule,
-                    candidate_diameter_mm,
-                    series_uid,
-                    candidate_center_xyz
+            # We include only non-nodules because nodules are provided by different file
+            if not is_nodule:
+                candidates_info.append(
+                    CandidateInfo(
+                        False, # is_nodule,
+                        False, # has_annotation
+                        False, # is_malignant
+                        candidate_diameter_mm,
+                        series_uid,
+                        candidate_center_xyz
+                    )
                 )
-            )
             
     candidates_info.sort(reverse=True)
             
     return candidates_info
 
+@lru_cache(1)
+def get_candidate_info_dict(requireOnDisk_bool=True):
+    candidate_info_list = get_candidate_info_list(requireOnDisk_bool)
+    candidate_info_dict = {}
+
+    for candidateInfo_tup in candidate_info_list:
+        candidate_info_dict.setdefault(candidateInfo_tup.series_uid,
+                                      []).append(candidateInfo_tup)
+
+    return candidate_info_dict
 
 IRCTuple = namedtuple('IRCTuple', ['index', 'row', 'col'])
 XYZTupple = namedtuple('XYZTupple', ['x', 'y', 'z'])
@@ -169,6 +203,13 @@ class Ct:
         self.vx_size_xyz = XYZTupple(*mdh_img.GetSpacing())
         ## Flipping the axes (and potentially a rotation or other transforms) is encoded in a 3 × 3 matrix
         self.direction = np.array(mdh_img.GetDirection()).reshape(3, 3)
+        
+        # Prepare data for Segmentation
+        ## List of actual nodules
+        candidates = get_candidate_info_dict()[self.series_uid]
+        positive_candidates = [c for c in candidates if c.diameter_mm != 0.0 and c.is_nodule == True]
+        self.positive_mask = self.build_annotation_mask(nodule_list = positive_candidates)
+        self.positive_indexes = self.positive_mask.sum(axis=(1,2)).nonzero().tolist()                         
 
         
     def get_raw_candidate(self, center_xyz, width_irc) -> Tuple[ArrayLike, ArrayLike]:
@@ -207,7 +248,46 @@ class Ct:
             
             slice_list.append(slice(start_ndx, end_ndx))
         ct_chunk = self.hu[tuple(slice_list)] # Use slices in 3 dimensions to cut chunk out of whole Ct Scan
-        return ct_chunk, center_irc
+        pos_slices = self.positive_mask[tuple(slice_list)] # Use slices in 3 dimensions to choose positive mask of each nodule
+        return ct_chunk, center_irc, pos_slices
+    
+    def build_annotation_mask(self, nodule_list, threshold_hu: int = -700):
+        
+        # Bounding box templat
+        annotated_mask = torch.zeros(self.hu.shape, dtype=torch.bool)
+        
+        for c_ix, candidate in enumerate(nodule_list):
+            center_irc = CtConversion.xyz2irc(candidate.center_xyz, self.origin_xyz, self.vx_size_xyz, self.direction)
+            ci, cr, cc = center_irc.index, center_irc.row, center_irc.col
+            
+            index_radius = 2
+            try:
+                while self.hu[ci - index_radius, cr, cc] > threshold_hu and self.hu[ci + index_radius, cr, cc] > threshold_hu:
+                    index_radius+=1
+            except IndexError:
+                index_radius -= 1
+                
+            row_radius = 2
+            try:
+                while self.hu[ci, cr - row_radius, cc] > threshold_hu and self.hu[ci, cr + row_radius, cc] > threshold_hu:
+                    row_radius+=1
+            except IndexError:
+                row_radius -= 1
+                
+            col_radius = 2
+            try:
+                while self.hu[ci, cr, cc - col_radius] > threshold_hu and self.hu[ci, cr, cc + col_radius] > threshold_hu:
+                    col_radius+=1
+            except IndexError:
+                col_radius -= 1
+                
+            annotated_mask[ci-index_radius:ci+index_radius+1, 
+                           cr-row_radius:cr+row_radius+1, 
+                           cc-col_radius:cc+col_radius+1] = True
+            
+        annotated_mask = annotated_mask & (self.hu > threshold_hu)
+            
+        return annotated_mask
     
 
 @lru_cache(1, typed=True)
@@ -217,8 +297,14 @@ def get_ct(series_uid: str):
 @raw_cache.memoize(typed=True)
 def get_ct_raw_candidate(series_uid: str, center_xyz: NamedTuple, width_irc: Tuple) -> Tuple:
     ct = get_ct(series_uid)
-    ct_chunk, center_irc = ct.get_raw_candidate(center_xyz, width_irc)
-    return ct_chunk, center_irc
+    ct_chunk, center_irc, pos_slices = ct.get_raw_candidate(center_xyz, width_irc)
+    return ct_chunk, pos_slices, center_irc
+
+
+@raw_cache.memoize(typed=True)
+def get_ct_sample_size(series_uid: str):
+    ct = Ct(series_uid)
+    return int(ct.hu.shape[0]), ct.positive_indexes
 
 
 def get_ct_augmented_candidate(
@@ -229,10 +315,10 @@ def get_ct_augmented_candidate(
     use_cache: bool = True
 ):
     if use_cache:
-        ct_chunk, center_irc = get_ct_raw_candidate(series_uid, center_xyz, width_irc)
+        ct_chunk, _, center_irc = get_ct_raw_candidate(series_uid, center_xyz, width_irc)
     else:
         ct = get_ct(series_uid)
-        ct_chunk, center_irc = ct.get_raw_candidate(center_xyz, width_irc)
+        ct_chunk, _, center_irc = ct.get_raw_candidate(center_xyz, width_irc)
     ct_chunk = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
     
     transform_t = torch.eye(n=4)
@@ -304,7 +390,7 @@ def validate_augmentations(augmentations: Dict) -> Dict:
     return augmentations
     
 
-class LunaDataset(Dataset):
+class Luna3DClassificationDataset(Dataset):
     def __init__(self, 
                  val_stride: int = 0,
                  is_val_set: bool = None,
@@ -393,8 +479,148 @@ class LunaDataset(Dataset):
         ) 
 
 
+class BaseLuna2DSegmentationDataset(Dataset):
+    def __init__(self,
+                 is_val_set: bool, 
+                 val_stride: int,
+                 series_uid: str = None, 
+                 process_full_ct: bool = False,
+                 context_slice_count: int = 3) -> None:
+        
+        # variables
+        self.process_full_ct = process_full_ct
+        self.context_slice_count = context_slice_count
+        # generate list of series to include it Dataset
+        if not series_uid:
+            self.series = sorted(get_candidate_info_dict().keys())
+        else:
+            self.series = [series_uid]
+            
+        print(f'len(series) before subset = {len(self.series)}')
+        
+        # Select Training or Validation version of this Dataset
+        if is_val_set:
+            assert val_stride > 0, val_stride
+            self.series = self.series[::val_stride] # Starting with a series list containing all our series, we keep only every val_stride-th element, starting with 0
+            assert self.series
+        elif val_stride >0:
+            del self.series[::val_stride]
+            assert self.series
+        
+        #print(f'len(series) after subset = {len(self.series)}')
+        
+        # Two modes for training 
+        self.sample_list = []
+        self.index_count_summary = []
+        for series_uid in self.series:
+            if series_uid == '1.3.6.1.4.1.14519.5.2.1.6279.6001.252634638822000832774167856951':
+                ...
+            index_count, positive_indexes = get_ct_sample_size(series_uid)
+            self.index_count_summary.append(index_count)
+            ## If we want to process pictures with original all channels [147, :, :]
+            ## This will be useful when we’re evaluating end-to-end performance, since we need to pretend that we’re starting off with no prior information about the CT.
+            if self.process_full_ct:
+                self.sample_list += [(series_uid, idx) for idx in range(index_count)]
+            ## If we want to cut only channels which includes positive nodule
+            ## We will use for validation during training, which is when we’re limiting ourselves to only the CT slices that have a positive mask present.
+            else:
+                self.sample_list += [(series_uid, idx) for idx in positive_indexes]
+                
+        #print(f'len(sample_list) after subset = {len(set([s[0] for s in self.sample_list]))}')
+        
+        # prepare list of candidates
+        self.all_candidates = get_candidate_info_list()
+        #print(f'len(self.all_candidates) = {len(set([c.series_uid for c in self.all_candidates]))}')
+        self.candidates = [candidate for candidate in self.all_candidates if candidate.series_uid in set(self.series)]
+        #print(f'len(self.candidates) = {len(set([c.series_uid for c in self.candidates]))}')
+        self.positive_candidates = [candidate for candidate in self.candidates if candidate.is_nodule]
+        #print(f'len(self.positive_candidates) = {len(set([c.series_uid for c in self.positive_candidates]))}')
+                
+    def get_full_slice(self, series_uid: str, slice_ndx: int) -> Tuple[torch.Tensor, torch.Tensor, str, int]:
+        """Based on localisation index of nodule [slice_ndx] choose 3 slices before and after as 
+        input for the model. In case the slice_ndx is close to first or last slice make sure it's 
+        not out of range. 
+        
+        So ct_t will be input to model as 2D slice of MRI picture with 7 channels of surrounding slices. 
+        The output is 2D matrix with segmentation [True/False] of particular slice_ndx slice. 
+
+        Args:
+            series_uid (str): Series identifier
+            slice_ndx (int): SLice identifier
+
+        Returns:
+            Tuple: Tuple[ct_t, pos_t, series_uid, slice_ndx]
+        """
+        ct = get_ct(series_uid)
+        ct_t = torch.zeros((self.context_slice_count * 2 + 1 , 512, 512))
+        
+        start_ndx = slice_ndx - self.context_slice_count
+        end_ndx = slice_ndx + self.context_slice_count + 1
+        for i, context_ndx in enumerate(range(start_ndx, end_ndx)):
+            context_ndx = max(context_ndx, 0) # make sure it's not outside picture on left
+            context_ndx = min(context_ndx, ct.hu.shape[0]) # make sure it's not outside picture on right
+            ct_t[i] = torch.from_numpy(ct.hu[context_ndx].astype(np.float32))
+        ct_t.clamp_(-100, 100)
+
+        pos_t = ct.positive_mask[slice_ndx].unsqueeze(0)
+
+        return ct_t, pos_t, ct.series_uid, slice_ndx
+                    
+    def __len__(self):
+        return len(self.sample_list)
+        
+    def __getitem__(self, ndx: int) -> Tuple:
+        """
+        Args:
+            ndx (int): 
+
+        Returns:
+            Tuple: 
+        """
+        
+        series_uid, slice_ndx  = self.sample_list[ndx % len(self.sample_list)]
+        return self.get_full_slice(series_uid, slice_ndx[0])
+
+
+class TrainLuna2DSegmentationDataset(BaseLuna2DSegmentationDataset):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+
+            self.ratio_int = 2
+            self.target_size = (7, 96, 96)
+            
+        def get_cropped_slice(self, candidate: CandidateInfo) -> Tuple[torch.Tensor, torch.Tensor, str, int]:
+
+            ct_chunk, pos_slices, center_irc = get_ct_raw_candidate(candidate.series_uid, 
+                                                                    candidate.center_xyz, 
+                                                                    self.target_size)
+            
+            pos_slice = pos_slices[3:4] # [1, 96, 96]
+            row_offset = random.randrange(0, 32)
+            col_offset = random.randrange(0, 32)
+            
+            ct_chunk = ct_chunk[:, row_offset:row_offset+64, col_offset:col_offset+64]
+            pos_slice = pos_slice[:, row_offset:row_offset+64, col_offset:col_offset+64]
+
+            return ct_chunk, pos_slice, candidate.series_uid, center_irc.index
+            
+            
+        def __getitem__(self, ndx: int) -> Tuple:
+            candidate  = self.positive_candidates[ndx % len(self.positive_candidates)]
+            return self.get_cropped_slice(candidate)
+
+
+
 if __name__ == '__main__':
     
+    # CONFIG
+    show_images = False
+    
+    # -----------------------------------------------------------------------------------
+    # EXPLORE RAW DATA
+    # -----------------------------------------------------------------------------------
+    
+    print('-' * 20, '\n', 'EXPLORE RAW DATA', '\n','-' * 20)
     candidates = get_candidate_info_list()
     print(f'{len(candidates)} candidates nodules for {len(list(set([c.series_uid for c in candidates])))} files.')
     
@@ -403,34 +629,47 @@ if __name__ == '__main__':
     
     # Convert RAW image to Array
     img = Ct(series_uid=EXAMPLE_UID)
-    # CtConversion.print_histogram(array=img.hu)
+    if show_images:
+        CtConversion.print_histogram(array=img.hu)
     
     # Create chunk around nodule coordinates
     example_candidate = [c for c in candidates if c.series_uid == EXAMPLE_UID and c.diameter_mm != 0.0][0]
     width_irc = (32, 48, 48)
-    ct_chunk, center_irc = img.get_raw_candidate(center_xyz=example_candidate.center_xyz, 
+    ct_chunk, center_irc, pos_slices  = img.get_raw_candidate(center_xyz=example_candidate.center_xyz, 
                                                  width_irc=width_irc)
     print(f'Chunk size: {ct_chunk.shape} and center: {center_irc}')
-    # CtConversion.print_histogram(array=ct_chunk)
+    
+    if show_images:
+        CtConversion.print_histogram(array=ct_chunk)
     
     # Print full pictire and chunk in one plot for comparison:
-    # IMG.img_by_chunk_sidebyside(img.hu, 
-    #                             ct_chunk, 
-    #                             center_irc, 
-    #                             fig_title=EXAMPLE_UID, 
-    #                             add_rectangular=[center_irc, round(example_candidate.diameter_mm)])
+    if show_images:
+        IMG.img_by_chunk_sidebyside(img.hu, 
+                                    ct_chunk, 
+                                    center_irc, 
+                                    fig_title=EXAMPLE_UID, 
+                                    add_rectangular=[center_irc, round(example_candidate.diameter_mm)])
+        
+    # Verify sizes of images
+    candidates_series = list(set([c.series_uid for c in candidates]))
+    candidate_indexes = [Ct(series_uid).hu.shape for series_uid in candidates_series]
+    
+    # -----------------------------------------------------------------------------------
+    # LUNA DATASET FOR CLASSIFICATION
+    # -----------------------------------------------------------------------------------
     
     # Test Luna Dataset
+    print('-' * 20, '\n', 'LUNA DATASET FOR CLASSIFICATION', '\n','-' * 20)
     from utils.config import CONFIG
 
-    train_ds = LunaDataset(val_stride=10,
+    train_ds = Luna3DClassificationDataset(val_stride=10,
                             is_val_set=False,
                             augmentations=CONFIG.training.augmentation)
     
     print(f'LEN of LUNA DATASET: {len(train_ds)}')
     
     # Example of pictures and different augmentations.
-    ct_chunk_original, _ = img.get_raw_candidate(center_xyz=example_candidate.center_xyz, 
+    ct_chunk_original, _, _ = img.get_raw_candidate(center_xyz=example_candidate.center_xyz, 
                                                  width_irc=width_irc)
     ct_chunk_augmented, _ = get_ct_augmented_candidate(augmentation={'flip': True}, 
                                                        series_uid=EXAMPLE_UID,
@@ -441,11 +680,12 @@ if __name__ == '__main__':
     # IMG.single_image(ct_chunk_augmented[0][16])
     
     from utils.config import CONFIG
-    IMG.visualize_augmentations(func=get_ct_augmented_candidate,
-                                series_uid=EXAMPLE_UID,
-                                center_xyz=example_candidate.center_xyz,
-                                width_irc=width_irc,
-                                augmentations=CONFIG.training.augmentation)
+    if show_images:
+        IMG.visualize_augmentations(func=get_ct_augmented_candidate,
+                                    series_uid=EXAMPLE_UID,
+                                    center_xyz=example_candidate.center_xyz,
+                                    width_irc=width_irc,
+                                    augmentations=CONFIG.training.augmentation)
     
     
     # Loading DAtasets to DataLoader
@@ -461,3 +701,18 @@ if __name__ == '__main__':
         print(X.shape, y.shape)
         print(len(series_uid), len(center_list))
         break
+    
+    # -----------------------------------------------------------------------------------
+    # LUNA DATASET FOR SEGMENTATION
+    # -----------------------------------------------------------------------------------
+    
+    # Calculate and Visualize segmentation mask
+    print('-' * 20, '\n', 'LUNA DATASET FOR SEGMENTATION', '\n','-' * 20)
+    segmentation_mask = img.build_annotation_mask([example_candidate])
+    if show_images:
+        IMG.visualize_mask(img.hu[center_irc.index,:, :], mask_array=segmentation_mask[center_irc.index, :, :])
+    
+    segmentation_val_ds = BaseLuna2DSegmentationDataset(is_val_set=True, val_stride=10)
+    segmentation_train_ds = TrainLuna2DSegmentationDataset(is_val_set=False, val_stride=10)
+    segmentation_train_ds[0]
+    
