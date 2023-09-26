@@ -15,10 +15,11 @@ import torch
 import torch.nn.functional as F
 from numpy.typing import ArrayLike
 from torch.utils.data import DataLoader, Dataset
+import torch.nn as nn
 from utils.disk import getCache
 from utils.viz import IMG
 
-raw_cache = getCache('ct_chunk_raw_new')
+raw_cache = getCache('ct_chunk_raw')
 
 CandidateInfo = namedtuple(typename='candidate_info_tupple',
                            field_names='is_nodule, has_annotation, is_malignant, diameter_mm, series_uid, center_xyz')
@@ -196,7 +197,7 @@ class Ct:
         # we dont need to create this division therefore we can limit the range <-1000, 10000>. Even if this will not 
         # be accurate biologically, it is a method to remove outliers.
         mdh_array.clip(-1000, 1000, mdh_array)
-        self.hu = mdh_array
+        self.hu = torch.from_numpy(mdh_array).to(torch.float32)
         self.series_uid = series_uid
         # Conversion from XYZ to IRC
         self.origin_xyz = XYZTupple(*mdh_img.GetOrigin()) 
@@ -513,8 +514,6 @@ class BaseLuna2DSegmentationDataset(Dataset):
         self.sample_list = []
         self.index_count_summary = []
         for series_uid in self.series:
-            if series_uid == '1.3.6.1.4.1.14519.5.2.1.6279.6001.252634638822000832774167856951':
-                ...
             index_count, positive_indexes = get_ct_sample_size(series_uid)
             self.index_count_summary.append(index_count)
             ## If we want to process pictures with original all channels [147, :, :]
@@ -610,7 +609,77 @@ class TrainLuna2DSegmentationDataset(BaseLuna2DSegmentationDataset):
             return self.get_cropped_slice(candidate)
 
 
+class SegmentationAugmentation(nn.Module):
+    def __init__(self, flip: bool = None, 
+                 offset: float = None, 
+                 scale: float = None, 
+                 rotate: bool = None, 
+                 noise: float = None) -> None:
+        """Augment input data before feeding to NN. 
 
+        Args:
+            flip (bool, optional): Flip the image. Defaults to None.
+            offset (float, optional): Move image by ratio in any direction. Defaults to None.
+            scale (float, optional): Scale - make it bigger or smaller by ratio. Defaults to None.
+            rotate (bool, optional): Rotate around by random angle. Defaults to None.
+            noise (float, optional): Add random noise to the image. The higher ratio - more noise. Defaults to None.
+        """
+
+        super(SegmentationAugmentation, self).__init__()
+        self.flip = flip
+        self.offset = offset
+        self.scale = scale
+        self.rotate = rotate
+        self.noise = noise
+        
+    def _build2Dtransformation(self):
+        
+        transformation = torch.eye(3)
+        
+        for i in range(2):
+            
+            if self.flip:
+                if random.random() > 0.5:
+                    transformation[i,i] *= -1
+            if self.offset:
+                offset_float = self.offset
+                random_float = (random.random() * 2 - 1)
+                transformation[2,i] = offset_float * random_float
+            if self.scale:
+                scale_float = self.scale
+                random_float = (random.random() * 2 - 1)
+                transformation[i,i] *= 1.0 + scale_float * random_float
+            if self.rotate:
+                angle_rad = random.random() * math.pi * 2
+                s = math.sin(angle_rad)
+                c = math.cos(angle_rad)
+                rotation = torch.Tensor([
+                    [c, -s, 0],
+                    [s, c, 0],
+                    [0, 0, 1]
+                ])
+                transformation @= rotation    
+        return transformation
+
+    def forward(self, input, label):
+        
+        transformation = self._build2Dtransformation()
+        transformation = transformation.expand(input.shape[0], -1, -1)
+        transformation = transformation.to(input.device, dtype=torch.float32)
+        
+        affine_grid = F.affine_grid(theta=transformation[:,:2], size=input.size(), align_corners=False)
+        
+        augmented_input = F.grid_sample(input=input, grid=affine_grid, padding_mode='border', align_corners=False)
+        augmented_label = F.grid_sample(input=label.to(torch.float32), grid=affine_grid, padding_mode='border', align_corners=False)
+        
+        if self.noise:
+            noise_transformation = torch.rand_like(augmented_input)
+            noise_transformation *= self.noise
+            augmented_input += noise_transformation
+            
+        return augmented_input, augmented_label > 0.5 # Just before returning, we convert the mask back to Booleans by comparing to 0.5. The interpolation that grid_sample results in fractional values.
+
+    
 if __name__ == '__main__':
     
     # CONFIG
@@ -712,7 +781,61 @@ if __name__ == '__main__':
     if show_images:
         IMG.visualize_mask(img.hu[center_irc.index,:, :], mask_array=segmentation_mask[center_irc.index, :, :])
     
+    # Build Dataset for model
     segmentation_val_ds = BaseLuna2DSegmentationDataset(is_val_set=True, val_stride=10)
     segmentation_train_ds = TrainLuna2DSegmentationDataset(is_val_set=False, val_stride=10)
-    segmentation_train_ds[0]
+    input_t, label_t, series_uid, slice_ndx = segmentation_train_ds[0]
     
+    # Test and visualize augmentations
+    ## prepare data to visualize
+    show_images = True
+    simple_input = img.hu[50]
+    simple_label = torch.ones(simple_input.shape[0], simple_input.shape[1]).triu()
+    cols = int(simple_label.shape[1])
+    for i in range(int(cols / 2), cols):
+        simple_label[:, i] = 0.0
+    for i in range(0, int(cols / 4)):
+        simple_label[i, :] = 0.0
+    if show_images:
+        plt.title(label='Original')
+        plt.imshow(simple_input, cmap='gray', interpolation='nearest')
+        plt.imshow(simple_label, cmap='bwr', alpha=0.5)
+        plt.show()
+    simple_input, simple_label = simple_input.unsqueeze(0).unsqueeze(0), simple_label.unsqueeze(0).unsqueeze(0)
+        
+    flip_augmentations = SegmentationAugmentation(flip=True)
+    offset_augmentations = SegmentationAugmentation(offset=0.1)
+    scale_augmentations = SegmentationAugmentation(scale=0.2)
+    rotate_augmentations = SegmentationAugmentation(rotate=True)
+    noise_augmentations = SegmentationAugmentation(noise=5.0)
+    
+    flip_augmented = flip_augmentations(simple_input, simple_label) # Expected: (1, I, R, C), (1, 1, R, C),
+    if show_images:
+        plt.title(label='Flipped')
+        plt.imshow(flip_augmented[0][0][0], cmap='gray', interpolation='nearest')
+        plt.imshow(flip_augmented[1][0][0], cmap='bwr', alpha=0.5)
+        plt.show()
+    offset_augmented = offset_augmentations(simple_input, simple_label)
+    if show_images:
+        plt.title(label='Offset')
+        plt.imshow(offset_augmented[0][0][0], cmap='gray', interpolation='nearest')
+        plt.imshow(offset_augmented[1][0][0], cmap='bwr', alpha=0.5)
+        plt.show()
+    scale_augmented = scale_augmentations(simple_input, simple_label)
+    if show_images:
+        plt.title(label='Scaled')
+        plt.imshow(scale_augmented[0][0][0], cmap='gray', interpolation='nearest')
+        plt.imshow(scale_augmented[1][0][0], cmap='bwr', alpha=0.5)
+        plt.show()
+    rotate_augmented = rotate_augmentations(simple_input, simple_label)
+    if show_images:
+        plt.title(label='Rotated')
+        plt.imshow(rotate_augmented[0][0][0], cmap='gray', interpolation='nearest')
+        plt.imshow(rotate_augmented[1][0][0], cmap='bwr', alpha=0.5)
+        plt.show()
+    noise_augmented = noise_augmentations(simple_input, simple_label)
+    if show_images:
+        plt.title(label='Noised')
+        plt.imshow(noise_augmented[0][0][0], cmap='gray', interpolation='nearest')
+        plt.imshow(noise_augmented[1][0][0], cmap='bwr', alpha=0.5)
+        plt.show()
