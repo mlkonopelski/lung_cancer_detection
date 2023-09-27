@@ -733,7 +733,7 @@ if __name__ == '__main__':
 
     train_ds = Luna3DClassificationDataset(val_stride=10,
                             is_val_set=False,
-                            augmentations=CONFIG.training.augmentation)
+                            augmentations=CONFIG.training.classification_augmentation)
     
     print(f'LEN of LUNA DATASET: {len(train_ds)}')
     
@@ -754,7 +754,7 @@ if __name__ == '__main__':
                                     series_uid=EXAMPLE_UID,
                                     center_xyz=example_candidate.center_xyz,
                                     width_irc=width_irc,
-                                    augmentations=CONFIG.training.augmentation)
+                                    augmentations=CONFIG.training.classification_augmentation)
     
     
     # Loading DAtasets to DataLoader
