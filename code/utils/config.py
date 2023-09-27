@@ -12,7 +12,8 @@ class Training:
         self.num_workers = training_dict['num_workers']
         self.batch_size = training_dict['batch_size']
         self.balanced = training_dict['balanced']
-        self.augmentation = training_dict['augmentation']
+        self.classification_augmentation = training_dict['classification_augmentation']
+        self.segmentation_augmentation = training_dict['segmentation_augmentation']
         
 class Config:
     def __init__(self, conf_yaml: Dict) -> None:
