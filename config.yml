@@ -8,7 +8,7 @@ paths:
   best_model: .model/best
 training:
   epochs: 10
-  batch_size: 8
+  batch_size: 4
   num_workers: 1
   balanced: True
   classification_augmentation:
