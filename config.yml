@@ -1,5 +1,11 @@
 general:
   device: cpu
+paths:
+  data: .data
+  tensorboard: development
+  logs: .logs
+  model_checkpoints: .model/checkpoints
+  best_model: .model/best
 training:
   epochs: 10
   batch_size: 8
