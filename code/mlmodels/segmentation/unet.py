@@ -128,7 +128,7 @@ class UNET(nn.Module):
 
 
 class UNETLuna(nn.Module):
-    def __init__(self, input_channels: int = 7, output_channels: int = 2) -> None:
+    def __init__(self, input_channels: int = 7, output_channels: int = 1) -> None:
         super(UNETLuna, self).__init__()
         
         # BatchNorm2d: This way, we won’t have to normalize the data ourselves in the dataset; and, more importantly, 
