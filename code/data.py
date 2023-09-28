@@ -25,7 +25,7 @@ CandidateInfo = namedtuple(typename='candidate_info_tupple',
                            field_names='is_nodule, has_annotation, is_malignant, diameter_mm, series_uid, center_xyz')
 
 @lru_cache(1)
-def get_candidate_info_list(require_on_disk: bool = True) -> List[NamedTuple]:
+def get_candidate_info_list(require_on_disk: bool = True, random_sample: bool = False) -> List[NamedTuple]:
     '''
     Parse files:
         annotations.csv
@@ -50,6 +50,11 @@ def get_candidate_info_list(require_on_disk: bool = True) -> List[NamedTuple]:
     '''
     mhd = glob.glob(pathname='.data/*/*.mhd')
     present_on_disk = {os.path.split(filepath)[-1][:-4] for filepath in mhd}
+    
+    if random_sample:
+        present_on_disk_series = list(present_on_disk.keys())
+        sample_keys = random.choices(present_on_disk_series, k=min(len(present_on_disk_series), 10))
+        present_on_disk = {k:v for k, v in present_on_disk.items() if k in sample_keys} 
     
     annotation_info = {}
     with open('.data/annotations.csv', 'r') as f:
