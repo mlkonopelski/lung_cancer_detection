@@ -512,8 +512,8 @@ class BaseLuna2DSegmentationDataset(Dataset):
         elif val_stride >0:
             # TODO: In case of Development of only 1 series_uid it fails here because tehre are no Val examples to remove from this list.
             if not self.series:
-            del self.series[::val_stride]
-            assert self.series
+                del self.series[::val_stride]
+                assert self.series
         
         #print(f'len(series) after subset = {len(self.series)}')
         
