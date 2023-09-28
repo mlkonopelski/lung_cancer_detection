@@ -510,6 +510,8 @@ class BaseLuna2DSegmentationDataset(Dataset):
             self.series = self.series[::val_stride] # Starting with a series list containing all our series, we keep only every val_stride-th element, starting with 0
             assert self.series
         elif val_stride >0:
+            # TODO: In case of Development of only 1 series_uid it fails here because tehre are no Val examples to remove from this list.
+            if not self.series:
             del self.series[::val_stride]
             assert self.series
         
