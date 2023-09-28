@@ -558,7 +558,7 @@ class BaseLuna2DSegmentationDataset(Dataset):
         for i, context_ndx in enumerate(range(start_ndx, end_ndx)):
             context_ndx = max(context_ndx, 0) # make sure it's not outside picture on left
             context_ndx = min(context_ndx, ct.hu.shape[0]) # make sure it's not outside picture on right
-            ct_t[i] = torch.from_numpy(ct.hu[context_ndx].astype(np.float32))
+            ct_t[i] = ct.hu[context_ndx].to(torch.float32)
         ct_t.clamp_(-100, 100)
 
         pos_t = ct.positive_mask[slice_ndx].unsqueeze(0)
