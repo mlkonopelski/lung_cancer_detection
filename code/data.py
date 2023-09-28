@@ -789,9 +789,12 @@ if __name__ == '__main__':
         IMG.visualize_mask(img.hu[center_irc.index,:, :], mask_array=segmentation_mask[center_irc.index, :, :])
     
     # Build Dataset for model
-    segmentation_val_ds = BaseLuna2DSegmentationDataset(is_val_set=True, val_stride=10)
+    # Training Dataset
     segmentation_train_ds = TrainLuna2DSegmentationDataset(is_val_set=False, val_stride=10)
     input_t, label_t, series_uid, slice_ndx = segmentation_train_ds[0]
+    ## Valdiation Dataset
+    segmentation_val_ds = BaseLuna2DSegmentationDataset(is_val_set=True, val_stride=10)
+    input_t_val, label_t_val, series_uid_val, slice_ndx_val = segmentation_val_ds[0]
     
     # Test and visualize augmentations
     ## prepare data to visualize
