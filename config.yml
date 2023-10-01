@@ -1,14 +1,15 @@
 general:
-  device: cpu
+  device: mps
+  dev: True
 paths:
   data: .data
-  tensorboard: development
+  tensorboard: .runs
   logs: .logs
   model_checkpoints: .model/checkpoints
   best_model: .model/best
 training:
-  epochs: 10
-  batch_size: 4
+  epochs: 20
+  batch_size: 16
   num_workers: 1
   balanced: True
   classification_augmentation:
