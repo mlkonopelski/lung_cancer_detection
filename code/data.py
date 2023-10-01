@@ -564,9 +564,10 @@ class BaseLuna2DSegmentationDataset(Dataset):
         end_ndx = slice_ndx + self.context_slice_count + 1
         for i, context_ndx in enumerate(range(start_ndx, end_ndx)):
             context_ndx = max(context_ndx, 0) # make sure it's not outside picture on left
-            context_ndx = min(context_ndx, ct.hu.shape[0]) # make sure it's not outside picture on right
+            context_ndx = min(context_ndx, ct.hu.shape[0] - 1) # make sure it's not outside picture on right
             ct_t[i] = ct.hu[context_ndx].to(torch.float32)
-        ct_t.clamp_(-100, 100)
+        
+        ct_t.clamp_(-1000, 1000)
 
         pos_t = ct.positive_mask[slice_ndx].unsqueeze(0)
 
