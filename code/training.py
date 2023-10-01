@@ -40,7 +40,7 @@ METRICS_SIZE = 10
 
 
 class BaseTrainingApp(ABC):
-    def __init__(self, Model: nn.Module, tensorboard_path: str, sys_argv=None, dev: bool = False) -> None:
+    def __init__(self, Model: nn.Module, sys_argv=None, dev: bool = False) -> None:
         
         self.tensorboard_path = tensorboard_path
         self.dev = dev
@@ -107,8 +107,9 @@ class BaseTrainingApp(ABC):
         ...
 
     def _init_tensorboard_writers(self):
-        log_dir = os.path.join('.runs', self.tensorboard_path, self.time_str)
-        self.trn_writer = SummaryWriter(log_dir=log_dir + '/trn')
+        subcatalogue = 'prod' if not self.dev else 'dev'
+        log_dir = os.path.join(CONFIG.paths.tensorboard, subcatalogue, self.time_str)
+        self.train_writer = SummaryWriter(log_dir=log_dir + '/train')
         self.val_writer = SummaryWriter(log_dir=log_dir + '/val')
 
     def _compute_loss(self, batch_ndx, batch, metrics):
@@ -147,7 +148,7 @@ class BaseTrainingApp(ABC):
             
         for key, value in metrics_dict.items():
             if mode_str == 'train':
-                self.trn_writer.add_scalar(key, value, self.total_training_samples_count)
+                self.train_writer.add_scalar(key, value, self.total_training_samples_count)
             elif mode_str == 'val':
                 self.val_writer.add_scalar(key, value, self.total_training_samples_count)
         

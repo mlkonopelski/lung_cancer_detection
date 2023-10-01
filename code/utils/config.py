@@ -4,8 +4,17 @@ import yaml
 class General:
     def __init__(self, general_dict: Dict) -> None:
         self.device = general_dict['device']
+        self.dev = general_dict['dev']
         
-        
+
+class Paths:
+    def __init__(self, paths_dict: Dict) -> None:
+        self.data = paths_dict['data']
+        self.tensorboard = paths_dict['tensorboard']
+        self.logs = paths_dict['logs']
+        self.model_checkpoints = paths_dict['model_checkpoints']
+        self.best_model = paths_dict['best_model']
+
 class Training:
     def __init__(self, training_dict: Dict) -> None:
         self.epochs = training_dict['epochs']
@@ -18,6 +27,7 @@ class Training:
 class Config:
     def __init__(self, conf_yaml: Dict) -> None:
         self.general = General(conf_yaml['general'])
+        self.paths = Paths(conf_yaml['paths'])
         self.training = Training(conf_yaml['training'])
         
     # TODO: Implement a nice __str__ method
