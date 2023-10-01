@@ -18,6 +18,8 @@ from torch.utils.data import DataLoader, Dataset
 import torch.nn as nn
 from utils.disk import getCache
 from utils.viz import IMG
+from utils.config import CONFIG
+
 
 raw_cache = getCache('ct_chunk_raw')
 
@@ -500,7 +502,7 @@ class BaseLuna2DSegmentationDataset(Dataset):
         if not series_uid:
             self.series = sorted(get_candidate_info_dict().keys())
         else:
-            self.series = [series_uid]
+            self.series = [series_uid] #* CONFIG.training.batch_size * 64
             
         print(f'len(series) before subset = {len(self.series)}')
         
@@ -509,13 +511,15 @@ class BaseLuna2DSegmentationDataset(Dataset):
             assert val_stride > 0, val_stride
             self.series = self.series[::val_stride] # Starting with a series list containing all our series, we keep only every val_stride-th element, starting with 0
             assert self.series
+            if CONFIG.general.dev:
+                self.series = self.series[:1]
         elif val_stride >0:
             # TODO: In case of Development of only 1 series_uid it fails here because tehre are no Val examples to remove from this list.
             if not self.series:
                 del self.series[::val_stride]
                 assert self.series
         
-        #print(f'len(series) after subset = {len(self.series)}')
+        print(f'len(series) after subset = {len(self.series)}')
         
         # Two modes for training 
         self.sample_list = []
@@ -530,9 +534,12 @@ class BaseLuna2DSegmentationDataset(Dataset):
             ## If we want to cut only channels which includes positive nodule
             ## We will use for validation during training, which is when we’re limiting ourselves to only the CT slices that have a positive mask present.
             else:
-                self.sample_list += [(series_uid, idx) for idx in positive_indexes]
+                if not CONFIG.general.dev:
+                    self.sample_list += [(series_uid, idx) for idx in positive_indexes]
+                else:
+                    self.sample_list += [(series_uid, [67])] # We want to train model only on 1 slice
                 
-        #print(f'len(sample_list) after subset = {len(set([s[0] for s in self.sample_list]))}')
+        print(f'len(sample_list) after subset = {len(self.sample_list)}')
         
         # prepare list of candidates
         self.all_candidates = get_candidate_info_list()
@@ -594,7 +601,7 @@ class TrainLuna2DSegmentationDataset(BaseLuna2DSegmentationDataset):
             super().__init__(*args, **kwargs)
 
             self.ratio_int = 2
-            self.target_size = (7, 96, 96)
+            self.target_size = (7, 96, 96) if not CONFIG.general.dev else (7, 512, 512)
             
         def get_cropped_slice(self, candidate: CandidateInfo) -> Tuple[torch.Tensor, torch.Tensor, str, int]:
 
@@ -606,8 +613,9 @@ class TrainLuna2DSegmentationDataset(BaseLuna2DSegmentationDataset):
             row_offset = random.randrange(0, 32)
             col_offset = random.randrange(0, 32)
             
-            ct_chunk = ct_chunk[:, row_offset:row_offset+64, col_offset:col_offset+64]
-            pos_slice = pos_slice[:, row_offset:row_offset+64, col_offset:col_offset+64]
+            if not CONFIG.general.dev:
+                ct_chunk = ct_chunk[:, row_offset:row_offset+64, col_offset:col_offset+64]
+                pos_slice = pos_slice[:, row_offset:row_offset+64, col_offset:col_offset+64]
 
             return ct_chunk, pos_slice, candidate.series_uid, center_irc.index
             
@@ -691,7 +699,7 @@ class SegmentationAugmentation(nn.Module):
 if __name__ == '__main__':
     
     # CONFIG
-    show_images = False
+    show_images = True
     
     # -----------------------------------------------------------------------------------
     # EXPLORE RAW DATA
@@ -799,7 +807,6 @@ if __name__ == '__main__':
     
     # Test and visualize augmentations
     ## prepare data to visualize
-    show_images = True
     simple_input = img.hu[50]
     simple_label = torch.ones(simple_input.shape[0], simple_input.shape[1]).triu()
     cols = int(simple_label.shape[1])
