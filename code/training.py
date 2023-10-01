@@ -5,6 +5,8 @@ import sys
 import time
 from timeit import timeit
 from abc import ABC, abstractmethod
+from typing import Dict
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -23,14 +25,9 @@ EXAMPLE_UID = '1.3.6.1.4.1.14519.5.2.1.6279.6001.511347030803753100045216493273'
 METRICS_ACCURACY=0
 
 # CLASSIFICATION MATRIX
-METRICS_LABEL_NDX = 0
-METRICS_PRED_NDX = 1
-METRICS_LOSS_NDX = 2
-METRICS_FN_LOSS_NDX = 2
-METRICS_ALL_LOSS_NDX = 3
-METRICS_PTP_NDX = 4
-METRICS_PFN_NDX = 5
-METRICS_MFP_NDX = 6
+CLASSIFICATION_METRICS_LABEL_NDX = 0
+CLASSIFICATION_METRICS_PRED_NDX = 1
+CLASSIFICATION_METRICS_LOSS_NDX = 2
 
 # SEGMENTATION MATRIX
 METRICS_LOSS_NDX = 0
@@ -114,8 +111,9 @@ class BaseTrainingApp(ABC):
         ...
                 
     def _init_tensorboard_writers(self):
-        subcatalogue = 'prod' if not self.dev else 'dev'
-        log_dir = os.path.join(CONFIG.paths.tensorboard, subcatalogue, self.time_str)
+        env_path = 'prod' if not self.dev else 'dev'
+        model_path = type(self.model).__name__
+        log_dir = os.path.join(CONFIG.paths.tensorboard, env_path, model_path, self.time_str)
         self.train_writer = SummaryWriter(log_dir=log_dir + '/train')
         self.val_writer = SummaryWriter(log_dir=log_dir + '/val')
 
@@ -124,7 +122,7 @@ class BaseTrainingApp(ABC):
         input = input.to(self.device)
         labels = labels.to(self.device)
         
-        if self.model.training and self.augmentations_model:
+        if self.model.training and self.augmentation_model:
             input, labels = self.augmentation_model(input, labels)
 
         logits, probabilities = self.model(input)
@@ -146,12 +144,8 @@ class BaseTrainingApp(ABC):
         metrics_dict['accuracy'] = metrics_t[METRICS_ACCURACY].mean()
         print(f'EP:{epoch_ndx} {mode_str} results: {metrics_dict} finished in {round(time.time() - start, 3)}')
         return metrics_dict
-    
-    def _calculate_score(self):
-        score = ...
-        return score
         
-    def _write_epoch_metrics(self, mode_str, metrics_dict):
+    def _write_epoch_metrics(self, mode_str: str, metrics_dict: Dict):
             
         for key, value in metrics_dict.items():
             if mode_str == 'train':
@@ -216,12 +210,12 @@ class BaseTrainingApp(ABC):
             'augmentations': str(self.augmentation_model)
         }
 
-        saving_path = os.path.join(CONFIG.paths.best_model,
-                                   f"{'dev' if self.dev else 'prod'}",
-                                   f"{state['model_name']}_{state['time']}.best.state")
+        model_path = Path(os.path.join(CONFIG.paths.best_model, f"{'dev' if self.dev else 'prod'}"))
+        model_path.mkdir(parents=True, exist_ok=True)
+        model_name = Path(f"{state['model_name']}_{state['time']}.best.state")
 
-        torch.save(state, f = saving_path)
-        print("Saved model params to {}".format(saving_path))
+        torch.save(state, f=model_path / model_name)
+        print(f"Saved model params to {model_path}/{model_name}")
 
 
     def main(self):
@@ -233,15 +227,16 @@ class BaseTrainingApp(ABC):
             self._do_training(epoch_ix, train_dl)
             self._do_validation(epoch_ix, val_dl)
             if self.epoch_score > self.best_score:
-                self.save_model()
+                self.save_model(epoch_ix)
             if epoch_ix == 1 or epoch_ix % self.validation_cadence == 0:
                 self._log_images(epoch_ix=epoch_ix, mode='train', dl=train_dl)
                 self._log_images(epoch_ix=epoch_ix, mode='val', dl=val_dl)
 
 class ClassificationTrainingApp(BaseTrainingApp):
-    def __init__(self, Model: nn.Module, log_prefix: str, sys_argv=None, dev: bool = False) -> None:
-        super().__init__(Model, log_prefix, sys_argv, dev)
-        self.matrix_size = 3
+    def __init__(self, Model: nn.Module, sys_argv=None) -> None:
+        super().__init__(Model, sys_argv)
+        self.metrics_size = 3
+        self.scoring_metric = 'pr/f1'
     
     def _init_optimizer(self):
         """Helper metod to instantiate optimizer. 
@@ -291,7 +286,7 @@ class ClassificationTrainingApp(BaseTrainingApp):
                                              ratio=balance_ratio,
                                              augmentations=augmentation_dict)
         elif mode == 'val':
-            ds = BaseLuna2DSegmentationDataset(val_stride=10, is_val_set=True)
+            ds = Luna3DClassificationDataset(val_stride=10, is_val_set=True)
                       
         dl = DataLoader(ds,
                         batch_size=CONFIG.training.batch_size,
@@ -309,14 +304,14 @@ class ClassificationTrainingApp(BaseTrainingApp):
         # log results into matrix
         start_ndx = batch_ndx * CONFIG.training.batch_size
         end_ndx = start_ndx + labels.size(0)
-        metrics[METRICS_LABEL_NDX, start_ndx:end_ndx] = labels[:,1].detach()
-        metrics[METRICS_PRED_NDX, start_ndx:end_ndx] = probabilities[:, 1].detach()
-        metrics[METRICS_LOSS_NDX, start_ndx:end_ndx] = loss.detach()
+        metrics[CLASSIFICATION_METRICS_LABEL_NDX, start_ndx:end_ndx] = labels[:,1].detach()
+        metrics[CLASSIFICATION_METRICS_PRED_NDX, start_ndx:end_ndx] = probabilities[:, 1].detach()
+        metrics[CLASSIFICATION_METRICS_LOSS_NDX, start_ndx:end_ndx] = loss.detach()
         return metrics
 
-    def _write_epoch_metrics(self, epoch_ndx,  mode_str, metrics_t, start):
-        neg_label_mask = metrics_t[METRICS_LABEL_NDX] <= self.classification_threshold
-        neg_pred_mask = metrics_t[METRICS_PRED_NDX] <= self.classification_threshold
+    def _calculate_epoch_metrics(self, epoch_ndx, mode_str, metrics_t, start):
+        neg_label_mask = metrics_t[CLASSIFICATION_METRICS_LABEL_NDX] <= self.classification_threshold
+        neg_pred_mask = metrics_t[CLASSIFICATION_METRICS_PRED_NDX] <= self.classification_threshold
         
         pos_label_mask = ~neg_label_mask
         pos_pred_mask =  ~neg_pred_mask
@@ -338,9 +333,9 @@ class ClassificationTrainingApp(BaseTrainingApp):
             precision, recall, f1_score = 0, 0, 0
         
         metrics_dict = {}
-        metrics_dict['loss/all'] = metrics_t[METRICS_LOSS_NDX].mean()
-        metrics_dict['loss/neg'] = metrics_t[METRICS_LOSS_NDX, neg_label_mask].mean()
-        metrics_dict['loss/pos'] = metrics_t[METRICS_LOSS_NDX, pos_label_mask].mean()
+        metrics_dict['loss/all'] = metrics_t[CLASSIFICATION_METRICS_LOSS_NDX].mean().item()
+        metrics_dict['loss/neg'] = metrics_t[CLASSIFICATION_METRICS_LOSS_NDX, neg_label_mask].mean().item()
+        metrics_dict['loss/pos'] = metrics_t[CLASSIFICATION_METRICS_LOSS_NDX, pos_label_mask].mean().item()
         metrics_dict['correct/all'] = (true_pos_count + true_neg_count) / np.float32(metrics_t.shape[1]) * 100
         metrics_dict['correct/neg'] = true_neg_count / neg_count * 100
         metrics_dict['correct/pos'] = true_pos_count / pos_count * 100
@@ -349,11 +344,11 @@ class ClassificationTrainingApp(BaseTrainingApp):
         metrics_dict['pr/recall'] = recall
         metrics_dict['pr/f1'] = f1_score
         
-        for key, value in metrics_dict.items():
-            if mode_str == 'train':
-                self.train_writer.add_scalar(key, value, self.total_training_samples_count)
-            elif mode_str == 'val':
-                self.val_writer.add_scalar(key, value, self.total_training_samples_count)
+        print(f'EP:{epoch_ndx} {mode_str} results: {metrics_dict} finished in {round(time.time() - start, 3)}')
+        return metrics_dict
+                
+    def _log_images(self, epoch_ix: int, mode: str, dl: DataLoader):
+        ...
         
         
 class SegmentationTrainingApp(BaseTrainingApp):
@@ -535,9 +530,11 @@ class SegmentationTrainingApp(BaseTrainingApp):
                 
                 self._write_epoch_images(mode=mode, image=img, tag=f'{series_ix}_prediction_{slice_ix}')
 
+class LUNATrainingApp:
+    def __init__(self) -> None:
+        pass
 
 if __name__ == '__main__':
 
-    #ClassificationTrainingApp(Model=base_cnn.CNN, log_prefix='dev', dev=True).main()
-    
+    ClassificationTrainingApp(Model=base_cnn.CNN).main()
     SegmentationTrainingApp(Model=unet.UNETLuna).main()

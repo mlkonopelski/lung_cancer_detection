@@ -468,7 +468,8 @@ class Luna3DClassificationDataset(Dataset):
         ct_chunk, center_irc = get_ct_augmented_candidate(augmentation=self.augmentations,
                                                           series_uid=candidate_info.series_uid,
                                                           center_xyz=candidate_info.center_xyz,
-                                                          width_irc=width_irc
+                                                          width_irc=width_irc,
+                                                          use_cache=False # Caching Augmentations take too much disk space
                                                           )
         
         label = torch.tensor([
