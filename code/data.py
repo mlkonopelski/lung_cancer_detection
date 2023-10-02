@@ -508,7 +508,7 @@ class BaseLuna2DSegmentationDataset(Dataset):
         if not series_uid:
             self.series = sorted(get_candidate_info_dict().keys())
         else:
-            self.series = [series_uid] #* CONFIG.training.batch_size * 64
+            self.series = [series_uid] * CONFIG.training.batch_size * 64
             
         print(f'len(series) before subset = {len(self.series)}')
         
