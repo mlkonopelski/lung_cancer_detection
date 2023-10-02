@@ -512,6 +512,7 @@ class BaseLuna2DSegmentationDataset(Dataset):
             
         print(f'len(series) before subset = {len(self.series)}')
         
+        # FIXME: Create a more clean way of deviding Dataset to Train, Val in prod and dev. 
         # Select Training or Validation version of this Dataset
         if is_val_set:
             assert val_stride > 0, val_stride
@@ -520,7 +521,7 @@ class BaseLuna2DSegmentationDataset(Dataset):
             if CONFIG.general.dev:
                 self.series = self.series[:1]
         elif val_stride >0:
-            # TODO: In case of Development of only 1 series_uid it fails here because tehre are no Val examples to remove from this list.
+            # FIXME: In case of Development of only 1 series_uid it fails here because tehre are no Val examples to remove from this list.
             if not self.series:
                 del self.series[::val_stride]
                 assert self.series
