@@ -492,6 +492,55 @@ class Luna3DClassificationDataset(Dataset):
             
         ) 
 
+class InferLuna3DClassificationDataset(Dataset):
+    def __init__(self, 
+                 ct,
+                 candidates) -> None:
+        super().__init__()
+        self.ct = ct
+        self.candidates = candidates
+        
+    def cut_chunk_ct(self, center_irc, center_xyz,  width_irc = (32, 48, 48)) -> Tuple[ArrayLike, ArrayLike]:
+        """Use nodule center as b ase to cut of chunk od the original picture for classifications
+
+        Args:
+            center_xyz (_type_): cooridinates of center fo nodule
+            width_irc (_type_): Default size of chunk that we want to cut from original picture
+
+        Returns:
+            Tupple[ArrayLike, ArrayLike]: (New chunk with nodule in the middle, center of nodule using IRC coordinates)
+        """
+        slice_list = []
+        for axis, center_val in enumerate(center_irc):
+            # Based on center_irc and width_irc calculate start and end of chunk ix.
+            start_ndx = int(round(center_val - width_irc[axis]/2))
+            end_ndx = int(start_ndx + width_irc[axis])
+            
+            # In case of nodule center close to left min column, 
+            # chunk should start from 0 and have width of width_irc
+            if start_ndx < 0:
+                start_ndx = 0
+                end_ndx = int(width_irc[axis])
+
+            # In case of nodule center close to right max column,
+            # chunk should start from maximum column - width_irc
+            if end_ndx > self.ct.hu.shape[axis]:
+                end_ndx = self.ct.hu.shape[axis]
+                start_ndx = int(self.ct.hu.shape[axis] - width_irc[axis])
+            
+            slice_list.append(slice(start_ndx, end_ndx))
+            ct_chunk = self.ct.hu[tuple(slice_list)] # Use slices in 3 dimensions to cut chunk out of whole Ct Scan
+            ct_chunk = ct_chunk.unsqueeze(0) # add additional dimension for channel = 1
+        
+        return ct_chunk
+    
+    def __len__(self):
+        return len(self.candidates)
+    
+    def __getitem__(self, ndx):
+        center_irc, center_xyz = self.candidates[ndx]
+        ct_chunk = self.cut_chunk_ct(center_irc, center_xyz)
+        return ct_chunk, torch.Tensor(center_irc).to(torch.float32), torch.Tensor(center_xyz).to(torch.float32)
 
 class BaseLuna2DSegmentationDataset(Dataset):
     def __init__(self,
@@ -632,6 +681,32 @@ class TrainLuna2DSegmentationDataset(BaseLuna2DSegmentationDataset):
             return self.get_cropped_slice(candidate)
 
 
+class InferLuna2DSegmentationDataset(BaseLuna2DSegmentationDataset):
+    def __init__(self, ct: Ct, context_slice_count: int = 3) -> None:
+        self.ct = ct
+        self.context_slice_count = context_slice_count
+        
+    def get_full_slice(self, slice_ix: int) -> Tuple[torch.Tensor, torch.Tensor, str, int]:
+
+        ct_t = torch.zeros((self.context_slice_count * 2 + 1 , 512, 512))
+        
+        start_ndx = slice_ix - self.context_slice_count
+        end_ndx = slice_ix + self.context_slice_count + 1
+        for i, context_ndx in enumerate(range(start_ndx, end_ndx)):
+            context_ndx = max(context_ndx, 0) # make sure it's not outside picture on left
+            context_ndx = min(context_ndx, self.ct.hu.shape[0] - 1) # make sure it's not outside picture on right
+            ct_t[i] = self.ct.hu[context_ndx].to(torch.float32)
+        
+        ct_t.clamp_(-1000, 1000)
+        return ct_t, slice_ix
+                    
+    def __len__(self):
+        return self.ct.hu.shape[0]
+        
+    def __getitem__(self, ix: int) -> Tuple:  
+        return self.get_full_slice(slice_ix=ix)
+        
+        
 class SegmentationAugmentation(nn.Module):
     def __init__(self, flip: bool = None, 
                  offset: float = None, 
