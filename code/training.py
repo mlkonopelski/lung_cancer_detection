@@ -5,13 +5,15 @@ import sys
 import time
 from timeit import timeit
 from abc import ABC, abstractmethod
-from typing import Dict
+from typing import Dict, List
 from pathlib import Path
+
+import scipy.ndimage as ndimage
 
 import numpy as np
 import torch
 import torch.nn as nn
-from data import Luna3DClassificationDataset, TrainLuna2DSegmentationDataset, BaseLuna2DSegmentationDataset, SegmentationAugmentation, get_ct
+from data import CandidateInfo, Ct, CtConversion, Luna3DClassificationDataset, TrainLuna2DSegmentationDataset, BaseLuna2DSegmentationDataset, SegmentationAugmentation, get_ct
 from mlmodels.classifiers import base_cnn
 from mlmodels.segmentation import unet
 from torch.utils.data import DataLoader
@@ -40,6 +42,7 @@ METRICS_SIZE = 10
 
 class BaseTrainingApp(ABC):
     def __init__(self, Model: nn.Module, sys_argv=None) -> None:
+        # TODO: Write all Docstrings in TrainingApp
         
         self.dev = CONFIG.general.dev
         self.metrics_size = 1
@@ -349,13 +352,13 @@ class ClassificationTrainingApp(BaseTrainingApp):
                 
     def _log_images(self, epoch_ix: int, mode: str, dl: DataLoader):
         ...
-        
-        
+  
 class SegmentationTrainingApp(BaseTrainingApp):
-    def __init__(self, Model: nn.Module, tensorboard_path: str, sys_argv=None, dev: bool = False) -> None:
-        super().__init__(Model, tensorboard_path, sys_argv, dev)
+    def __init__(self, Model: nn.Module, sys_argv=None) -> None:
+        super().__init__(Model, sys_argv)
         self._init_augmentations_model()
         self.metrics_size = 4
+        self.scoring_metric = 'pr/f1_score'
     
     def _init_optimizer(self):
         """Helper metod to instantiate optimizer. 
@@ -370,8 +373,8 @@ class SegmentationTrainingApp(BaseTrainingApp):
     
     def _init_augmentations_model(self):
         augmentation_dict = CONFIG.training.segmentation_augmentation if CONFIG.training.segmentation_augmentation else {}
-        #TODO: Turn off Augmentations for training because it does't converge on 1 picture
-        #self.augmentation_model = SegmentationAugmentation(**CONFIG.training.segmentation_augmentation)
+        if not self.dev:
+            self.augmentation_model = SegmentationAugmentation(**CONFIG.training.segmentation_augmentation)
 
 
     def loss_fn(self, predictions, labels, epsilon: int = 1):
@@ -484,7 +487,7 @@ class SegmentationTrainingApp(BaseTrainingApp):
                             )
             return dl
         
-        # TODO: Check if series remove from train set are removed from validation since we use different classes. 
+        # FIXME: Check if series remove from train set are removed from validation since we use different classes. 
         if mode == 'train':
             ds = TrainLuna2DSegmentationDataset(val_stride=10, is_val_set=False)
         elif mode == 'val':
@@ -529,10 +532,6 @@ class SegmentationTrainingApp(BaseTrainingApp):
                 img = img.clip(0, 1, img)
                 
                 self._write_epoch_images(mode=mode, image=img, tag=f'{series_ix}_prediction_{slice_ix}')
-
-class LUNATrainingApp:
-    def __init__(self) -> None:
-        pass
 
 if __name__ == '__main__':
 
