@@ -187,10 +187,8 @@ class CtConversion:
         plt.show()
 
 
-class Ct:
-    """_summary_
-    """
-    def __init__(self, series_uid: str) -> None:
+class CtBase:
+    def __init__(self, series_uid) -> None:
         mdh_path = glob.glob(f'.data/subset*/{series_uid}.mhd')[0]
         # Original files are in MetaIO format: "https://itk.org/Wiki/MetaIO/""
         # and therefore sitk library is used for converting .mdh + .raw files into array
@@ -211,6 +209,13 @@ class Ct:
         self.vx_size_xyz = XYZTupple(*mdh_img.GetSpacing())
         ## Flipping the axes (and potentially a rotation or other transforms) is encoded in a 3 × 3 matrix
         self.direction = np.array(mdh_img.GetDirection()).reshape(3, 3)
+
+
+class Ct(CtBase):
+    """_summary_
+    """
+    def __init__(self, series_uid) -> None:
+        super().__init__(series_uid)
         
         # Prepare data for Segmentation
         ## List of actual nodules
