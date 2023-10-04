@@ -136,7 +136,7 @@ class BaseTrainingApp(ABC):
         return loss.mean(), metrics
 
     def _calculate_batch_metrics(self, metrics, probabilities, labels, loss, batch_ndx):
-        start_ndx = batch_ndx * CONFIG.training.batch_size
+        start_ndx = batch_ndx * CONFIG.cls_training.batch_size
         end_ndx = start_ndx + labels.size(0)
         accuracy = probabilities[:, 1].detach() > self.classification_threshold == labels[:,1].detach() 
         metrics[METRICS_ACCURACY, start_ndx:end_ndx] = accuracy
@@ -226,7 +226,7 @@ class BaseTrainingApp(ABC):
         train_dl = self._init_dl(mode='train')
         val_dl = self._init_dl(mode='val')
 
-        for epoch_ix in range(1, CONFIG.training.epochs+1):
+        for epoch_ix in range(1, CONFIG.cls_training.epochs+1):
             self._do_training(epoch_ix, train_dl)
             self._do_validation(epoch_ix, val_dl)
             if self.epoch_score > self.best_score:
@@ -262,8 +262,8 @@ class ClassificationTrainingApp(BaseTrainingApp):
 
         assert mode in ['train', 'val']
 
-        balance_ratio = 1 if CONFIG.training.balanced else None
-        augmentation_dict = CONFIG.training.classification_augmentation if CONFIG.training.classification_augmentation else {}
+        balance_ratio = 1 if CONFIG.cls_training.balanced else None
+        augmentation_dict = CONFIG.cls_training.classification_augmentation if CONFIG.cls_training.classification_augmentation else {}
         
         # This part is used only for development process to speed up the testing and validation of each part. 
         # It might be removed in future when the repositoty will be project will be ready. 
@@ -279,7 +279,7 @@ class ClassificationTrainingApp(BaseTrainingApp):
                                                  is_val_set=True,
                                                  series_uid=EXAMPLE_UID) 
                 
-            dl = DataLoader(ds, batch_size=CONFIG.training.batch_size, shuffle=True)
+            dl = DataLoader(ds, batch_size=CONFIG.cls_training.batch_size, shuffle=True)
             return dl
         
         # Training sample should be balanced and added augmnetations
@@ -292,7 +292,7 @@ class ClassificationTrainingApp(BaseTrainingApp):
             ds = Luna3DClassificationDataset(val_stride=10, is_val_set=True)
                       
         dl = DataLoader(ds,
-                        batch_size=CONFIG.training.batch_size,
+                        batch_size=CONFIG.cls_training.batch_size,
                         shuffle=True,
                         #num_workers=CONFIG.training.num_workers,
                         pin_memory=self.pin_memory,
@@ -305,7 +305,7 @@ class ClassificationTrainingApp(BaseTrainingApp):
         # In special cases it needs to be reimplemented together with self._write_epoch_metrics
 
         # log results into matrix
-        start_ndx = batch_ndx * CONFIG.training.batch_size
+        start_ndx = batch_ndx * CONFIG.cls_training.batch_size
         end_ndx = start_ndx + labels.size(0)
         metrics[CLASSIFICATION_METRICS_LABEL_NDX, start_ndx:end_ndx] = labels[:,1].detach()
         metrics[CLASSIFICATION_METRICS_PRED_NDX, start_ndx:end_ndx] = probabilities[:, 1].detach()
@@ -372,9 +372,9 @@ class SegmentationTrainingApp(BaseTrainingApp):
         return optimizer
     
     def _init_augmentations_model(self):
-        augmentation_dict = CONFIG.training.segmentation_augmentation if CONFIG.training.segmentation_augmentation else {}
+        augmentation_dict = CONFIG.cls_training.segmentation_augmentation if CONFIG.cls_training.segmentation_augmentation else {}
         if not self.dev:
-            self.augmentation_model = SegmentationAugmentation(**CONFIG.training.segmentation_augmentation)
+            self.augmentation_model = SegmentationAugmentation(**CONFIG.cls_training.segmentation_augmentation)
 
 
     def loss_fn(self, predictions, labels, epsilon: int = 1):
@@ -394,7 +394,7 @@ class SegmentationTrainingApp(BaseTrainingApp):
         return 1 - dice_ratio
 
     def _calculate_batch_metrics(self, metrics, predictions, labels, loss, batch_ndx):
-        start_ndx = batch_ndx * CONFIG.training.batch_size
+        start_ndx = batch_ndx * CONFIG.cls_training.batch_size
         end_ndx = start_ndx + labels.size(0)
 
         with torch.no_grad():
@@ -482,7 +482,7 @@ class SegmentationTrainingApp(BaseTrainingApp):
                                                     series_uid=EXAMPLE_UID)
                 
             dl = DataLoader(ds,
-                            batch_size=CONFIG.training.batch_size,
+                            batch_size=CONFIG.cls_training.batch_size,
                             shuffle=True
                             )
             return dl
@@ -494,7 +494,7 @@ class SegmentationTrainingApp(BaseTrainingApp):
             ds = BaseLuna2DSegmentationDataset(val_stride=10, is_val_set=True)
                       
         dl = DataLoader(ds,
-                        batch_size=CONFIG.training.batch_size,
+                        batch_size=CONFIG.cls_training.batch_size,
                         shuffle=True,
                         #num_workers=CONFIG.training.num_workers,
                         pin_memory=self.pin_memory,

@@ -51,14 +51,14 @@ class TwoStepLUNAApp:
     def _init_cls_dl(self, ct: CtBase, candidates: List[CandidateInfo]) -> DataLoader:
         
         ds = InferLuna3DClassificationDataset(ct, candidates)
-        dl = DataLoader(ds, batch_size=CONFIG.training.batch_size)
+        dl = DataLoader(ds, batch_size=CONFIG.cls_training.batch_size)
         
         return dl
     
     def _init_seg_dl(self, ct: CtBase) -> DataLoader:
         
         ds = InferLuna2DSegmentationDataset(ct)
-        dl = DataLoader(ds, batch_size=CONFIG.training.batch_size) #FIXME: Later create a new config attribute: interferance
+        dl = DataLoader(ds, batch_size=CONFIG.cls_training.batch_size) #FIXME: Later create a new config attribute: interferance
         return dl
     
     def group_segmentation_output(self, ct: Ct, seg_mask: torch.Tensor) -> List[Tuple]:

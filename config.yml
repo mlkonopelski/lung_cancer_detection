@@ -7,18 +7,26 @@ paths:
   logs: .logs
   model_checkpoints: .model/checkpoints
   best_model: .model/best
-training:
-  epochs: 20
+cls_training:
+  epochs: 10
+  iter_per_epoch: 50000
+  early_stopping: 3
   batch_size: 16
   num_workers: 1
   balanced: True
-  classification_augmentation:
+  augmentation:
     flip: True
     offset: 0.1
     scale: 0.2
     rotation: True
     noise: 25.0
-  segmentation_augmentation:
+seg_training:
+  epochs: 25
+  iter_per_epoch: 3000
+  early_stopping: 3
+  batch_size: 16
+  num_workers: 1
+  augmentation:
     flip: True
     offset: 0.1
     scale: 0.2

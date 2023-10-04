@@ -409,35 +409,80 @@ class Luna3DClassificationDataset(Dataset):
                  is_val_set: bool = None,
                  ratio: int = 0,
                  augmentations: Dict = {},
-                 series_uid=None) -> None:
+                 sort_by: str = 'random',
+                 series_uid: str = None,
+                 candidates_info: List[CandidateInfo] = None) -> None:
         super().__init__()
-        # Copy the return value of get_candidate_info_list func so the 
-        # cached copy won’t be impacted by altering self.candidates_info
-        self.candidates_info = copy.copy(get_candidate_info_list())
-        # Handle to process only 1 example (for dev)
+
+        if candidates_info:
+            self.candidates_info = copy.copy(candidates_info)
+            self.use_cache = False
+        else:
+            self.candidates_info = copy.copy(get_candidate_info_list())
+            self.use_cache = True
+
         if series_uid:
-            self.candidates_info = [x for x in self.candidates_info if x.series_uid == series_uid]
+            self.series = [series_uid]
+        else:
+            self.series = sorted(set([c.series_uid for c in self.candidates_info]))
+            
+        # Handle to process only 1 example (for dev)
         if is_val_set:
             assert val_stride > 0, val_stride
-            self.candidates_info[::val_stride]
+            self.series = self.series[::val_stride] # Starting with a series list containing all our series, we keep only every val_stride-th element, starting with 0
+            assert self.series
+            if CONFIG.general.dev:
+                self.series = self.series[:1]
         elif val_stride > 0:
-            del self.candidates_info[::val_stride]
-            assert self.candidates_info
-        # help with over
+            if not CONFIG.general.dev:
+                del self.series[::val_stride]
+                assert self.series
+
+        candidates_info = [c for c in self.candidates_info if c.series_uid in self.series]
+        
+        if sort_by == 'random':
+            random.shuffle(self.candidates_info)
+        elif sort_by == 'series_uid':
+            self.candidates_info.sort(key=lambda x: (x.series_uid, x.center_xyz))
+        elif sort_by == 'label_and_size':
+            pass
+        else:
+            raise Exception("Unknown sort: " + repr(sort_by))
+
         self.augmentations = validate_augmentations(augmentations)
         # variables useful for balancing the dataset
         self.ratio = ratio
-        self.negative_list = [nt for nt in self.candidates_info if not nt.is_nodule]
-        self.positive_list = [nt for nt in self.candidates_info if nt.is_nodule]
-    
+        self.neg_list = \
+            [nt for nt in self.candidateInfo_list if not nt.isNodule_bool]
+        self.pos_list = \
+            [nt for nt in self.candidateInfo_list if nt.isNodule_bool]
+        self.ben_list = \
+            [nt for nt in self.pos_list if not nt.isMal_bool]
+        self.mal_list = \
+            [nt for nt in self.pos_list if nt.isMal_bool]
+
+        print("{!r}: {} {} samples, {} neg, {} pos, {} ratio".format(
+            self,
+            len(self.candidateInfo_list),
+            "validation" if is_val_set else "training",
+            len(self.neg_list),
+            len(self.pos_list),
+            '{}:1'.format(self.ratio_int) if self.ratio_int else 'unbalanced'
+        ))
     def __len__(self):
-        return len(self.candidates_info)
+        if self.ratio:
+            return CONFIG.cls_training.iter_per_epoch
+        else:
+            return len(self.candidates_info)
 
     def shuffle_samples(self):
         if self.ratio:
-            random.shuffle(self.negative_list)
-            random.shuffle(self.positive_list)
-    
+            random.shuffle(self.candidates_info)
+            random.shuffle(self.neg_list)
+            random.shuffle(self.pos_list)
+            random.shuffle(self.ben_list)
+            random.shuffle(self.mal_list)
+
     def __getitem__(self, ix: int) -> Tuple:
         """
         If order to balance the dataset we implement artificially chaning the order of dataset ix 
@@ -557,11 +602,10 @@ class BaseLuna2DSegmentationDataset(Dataset):
         if not series_uid:
             self.series = sorted(get_candidate_info_dict().keys())
         else:
-            self.series = [series_uid] * CONFIG.training.batch_size * 64
+            self.series = [series_uid] * CONFIG.seg_training.batch_size * 64
             
         print(f'len(series) before subset = {len(self.series)}')
         
-        # FIXME: Create a more clean way of deviding Dataset to Train, Val in prod and dev. 
         # Select Training or Validation version of this Dataset
         if is_val_set:
             assert val_stride > 0, val_stride
@@ -831,7 +875,7 @@ if __name__ == '__main__':
 
     train_ds = Luna3DClassificationDataset(val_stride=10,
                             is_val_set=False,
-                            augmentations=CONFIG.training.classification_augmentation)
+                            augmentations=CONFIG.cls_training.classification_augmentation)
     
     print(f'LEN of LUNA DATASET: {len(train_ds)}')
     
@@ -852,7 +896,7 @@ if __name__ == '__main__':
                                     series_uid=EXAMPLE_UID,
                                     center_xyz=example_candidate.center_xyz,
                                     width_irc=width_irc,
-                                    augmentations=CONFIG.training.classification_augmentation)
+                                    augmentations=CONFIG.cls_training.classification_augmentation)
     
     
     # Loading DAtasets to DataLoader

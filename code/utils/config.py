@@ -15,20 +15,32 @@ class Paths:
         self.model_checkpoints = paths_dict['model_checkpoints']
         self.best_model = paths_dict['best_model']
 
-class Training:
+class CLSTraining:
     def __init__(self, training_dict: Dict) -> None:
         self.epochs = training_dict['epochs']
+        self.iter_per_epoch = training_dict['iter_per_epoch']
+        self.early_stopping = training_dict['early_stopping']
         self.num_workers = training_dict['num_workers']
         self.batch_size = training_dict['batch_size']
         self.balanced = training_dict['balanced']
-        self.classification_augmentation = training_dict['classification_augmentation']
-        self.segmentation_augmentation = training_dict['segmentation_augmentation']
-        
+        self.augmentation = training_dict['augmentation']
+
+class SEGTraining:
+    def __init__(self, training_dict: Dict) -> None:
+        self.epochs = training_dict['epochs']
+        self.iter_per_epoch = training_dict['iter_per_epoch']
+        self.early_stopping = training_dict['early_stopping']       
+        self.num_workers = training_dict['num_workers']
+        self.batch_size = training_dict['batch_size']
+        self.augmentation = training_dict['augmentation']
+
+    
 class Config:
     def __init__(self, conf_yaml: Dict) -> None:
         self.general = General(conf_yaml['general'])
         self.paths = Paths(conf_yaml['paths'])
-        self.training = Training(conf_yaml['training'])
+        self.cls_training = CLSTraining(conf_yaml['cls_training'])
+        self.seg_training = SEGTraining(conf_yaml['seg_training'])
         
     # TODO: Implement a nice __str__ method
 
