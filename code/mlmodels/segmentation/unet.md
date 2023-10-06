@@ -4,6 +4,7 @@ This way would be possible to both learn spatial representation of image and be 
 
 ## Original UNET
 The original architecture looks like this:
+![alt text](resources/unet-custom-img.tiff "classic-unet-architecture")
 
 
 which has following interesting parts:  
