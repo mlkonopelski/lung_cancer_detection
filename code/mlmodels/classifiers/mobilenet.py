@@ -57,27 +57,29 @@ class DepthwiseConv1Version(nn.Module):
 
 
 class DepthwiseConv(nn.Module):
-    def __init__(self, in_features: int, stride: int) -> None:
+    def __init__(self, in_features: int, stride: int, activation: nn.Module = nn.ReLU) -> None:
         super().__init__()
         self.depth_conv = nn.Conv2d(in_features, in_features, kernel_size=3, stride=stride, padding=1, groups=in_features)
         self.depth_bn = nn.BatchNorm2d(in_features)
+        self.activation = activation()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.depth_conv(x)         # out: X, Y, out_features
         x = self.depth_bn(x)
-        x = F.relu6(x) # Originally activation was .relu(); .relu6() was introduced in v2
+        x = self.activation(x) # Originally activation was .relu(); .relu6() was introduced in v2
         return x
 
 class PointwiseConv(nn.Module):
-    def __init__(self, in_features: int, out_features: int) -> None:
+    def __init__(self, in_features: int, out_features: int, activation: nn.Module = nn.ReLU) -> None:
         super().__init__()
         self.point_conv = nn.Conv2d(in_features, out_features, kernel_size=1, stride=1, padding=0)
         self.point_bn = nn.BatchNorm2d(out_features)
+        self.activation = activation()
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.point_conv(x)
         x = self.point_bn(x)
-        x = F.relu6(x) 
+        x = self.activation(x)
         return x
 
 
