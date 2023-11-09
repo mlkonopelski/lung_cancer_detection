@@ -72,5 +72,10 @@ if __name__ == '__main__':
     model = model.to(DEVICE)
     example_tensor = torch.from_numpy(np.random.random([10, 1, 32, 48, 48]))
     example_tensor = example_tensor.to(DEVICE, dtype=torch.float32)
-    print(example_tensor.shape)
-    model(example_tensor)
+
+    
+    # Test model on sample DL:
+    from _data import DevClassifierTrainingApp    
+    DevClassifierTrainingApp(model).run(epochs=2)
+    
+    
