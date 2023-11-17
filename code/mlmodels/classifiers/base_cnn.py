@@ -76,6 +76,21 @@ if __name__ == '__main__':
     
     # Test model on sample DL:
     from _data import DevClassifierTrainingApp    
-    DevClassifierTrainingApp(model).run(epochs=2)
+    DevClassifierTrainingApp(model, lr=0.01, batch_size=32).run(epochs=1000)
     
-    
+# epoch: 100 
+#  train: loss: 0.6934208273887634 | acc: 0.5
+#  val: loss: 0.692616879940033 | acc: 0.5 
+# ----------
+# epoch: 200 
+#  train: loss: 0.6928043961524963 | acc: 0.625
+#  val: loss: 0.6928313970565796 | acc: 0.78125 
+# ----------
+# epoch: 300 
+#  train: loss: 0.5690343379974365 | acc: 0.796875
+#  val: loss: 0.5184496641159058 | acc: 0.84375 
+# ----------
+# epoch: 350 
+#  train: loss: 0.0003583983634598553 | acc: 1.0
+#  val: loss: 4.44463366875425e-05 | acc: 1.0 
+# ----------
