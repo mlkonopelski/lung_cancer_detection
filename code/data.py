@@ -934,25 +934,29 @@ if __name__ == '__main__':
     for i, sample in enumerate(_ds):
         ct_chunk, label, series_uid, center_irc = sample
         if label[0].item() == 1:
-            if pos_count == 50:
+            if pos_count == 32:
                 pos_save = False
             if pos_save:
                 dev_samples.append([ct_chunk, label, series_uid, center_irc])
                 pos_count+=1
         else:
-            if neg_count == 50:
+            if neg_count == 32:
                 neg_save = False
             if neg_save:
                 dev_samples.append([ct_chunk, label, series_uid, center_irc])
                 neg_count += 1
         if not pos_save and not neg_save:
             break
-        if i % 10 == 0:
+        if i % 8 == 0:
             print(f'Searched samples: {i} | neg: {neg_count} | pos: {pos_count}')
         
     import pickle
-    with open('.data/.dev/classifier/train_100.pkl', 'wb') as f:
+    with open('.data/.dev/classifier/val_16.pkl', 'wb') as f:
+        pickle.dump(random.sample(dev_samples, 16), f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    with open('.data/.dev/classifier/train_64.pkl', 'wb') as f:
         pickle.dump(dev_samples, f, protocol=pickle.HIGHEST_PROTOCOL)
+        
 
             
     # -----------------------------------------------------------------------------------

@@ -26,20 +26,20 @@ class Dev3DClassifierDataset(Dataset):
 
 class DevClassifierTrainingApp:
     
-    def __init__(self, model, batch_size: int = 32) -> None:
+    def __init__(self, model, lr=float, batch_size: int = 32) -> None:
         self.time_str = datetime.datetime.now().strftime('%Y%m%d%H%M')
         self.device = 'cpu'
         
         self.model = model
         self.batch_size = batch_size
         self.loss_fn = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(params=self.model.parameters(), lr=0.001, momentum=0.9)
+        self.optimizer = torch.optim.SGD(params=self.model.parameters(), lr=lr, momentum=0.9)
         self.total_trn_samples_count = 0
         self.total_val_samples_count = 0
         
-        self.trn_ds = Dev3DClassifierDataset('.data/.dev/classifier/train_100.pkl')
-        self.trn_dl = DataLoader(self.trn_ds, batch_size=batch_size, shuffle=True, pin_memory=True)
-        self.val_ds = Dev3DClassifierDataset('.data/.dev/classifier/val_20.pkl')
+        self.trn_ds = Dev3DClassifierDataset('.data/.dev/classifier/train_64.pkl')  # train_10
+        self.trn_dl = DataLoader(self.trn_ds, batch_size=batch_size, shuffle=True, pin_memory=True, )
+        self.val_ds = Dev3DClassifierDataset('.data/.dev/classifier/val_16.pkl')
         self.val_dl = DataLoader(self.trn_ds, batch_size=batch_size, shuffle=True, pin_memory=True)
     
     def _calculate_batch_metrics(self, metrics, probabilities, labels, batch_ndx):
@@ -50,6 +50,8 @@ class DevClassifierTrainingApp:
         return metrics
     
     def run(self, epochs: int,tensorboard: bool = True):
+        
+        start = datetime.datetime.now()
 
         if tensorboard:
             env_path = 'dev'
@@ -108,7 +110,7 @@ class DevClassifierTrainingApp:
             
 
             print(
-                f'epoch: {epoch} | i: {i}'
+                f'epoch: {epoch} | training time:  {datetime.datetime.now() - start}'
                 f"\n train: loss: {trn_loss} | acc: {trn_metrics_dict['accuracy']}"
                 f"\n val: loss: {val_loss} | acc: {val_metrics_dict['accuracy']}",
                 '\n'+'-'*10
@@ -117,7 +119,7 @@ class DevClassifierTrainingApp:
     
 if __name__ == '__main__':
 
-    train_path = '.data/.dev/classifier/train_100.pkl'
+    train_path = '.data/.dev/classifier/train_64.pkl'
     train_ds = Dev3DClassifierDataset(train_path)
     print(train_ds[0])
     
