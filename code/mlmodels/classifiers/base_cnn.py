@@ -72,5 +72,27 @@ if __name__ == '__main__':
     model = model.to(DEVICE)
     example_tensor = torch.from_numpy(np.random.random([10, 1, 32, 48, 48]))
     example_tensor = example_tensor.to(DEVICE, dtype=torch.float32)
-    print(example_tensor.shape)
-    model(example_tensor)
+
+    
+    # Test model on sample DL:
+    from _data import DevClassifierTrainingApp    
+    DevClassifierTrainingApp(model, 
+                             optimizer=torch.optim.SGD(params=model.parameters(), lr=0.01, momentum=0.9)
+                             ).run(epochs=1000)
+    
+# epoch: 100 
+#  train: loss: 0.6934208273887634 | acc: 0.5
+#  val: loss: 0.692616879940033 | acc: 0.5 
+# ----------
+# epoch: 200 
+#  train: loss: 0.6928043961524963 | acc: 0.625
+#  val: loss: 0.6928313970565796 | acc: 0.78125 
+# ----------
+# epoch: 300 
+#  train: loss: 0.5690343379974365 | acc: 0.796875
+#  val: loss: 0.5184496641159058 | acc: 0.84375 
+# ----------
+# epoch: 350 
+#  train: loss: 0.0003583983634598553 | acc: 1.0
+#  val: loss: 4.44463366875425e-05 | acc: 1.0 
+# ----------

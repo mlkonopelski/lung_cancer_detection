@@ -311,7 +311,7 @@ def get_ct(series_uid: str):
 def get_ct_raw_candidate(series_uid: str, center_xyz: NamedTuple, width_irc: Tuple) -> Tuple:
     ct = get_ct(series_uid)
     ct_chunk, center_irc, pos_slices = ct.get_raw_candidate(center_xyz, width_irc)
-    return ct_chunk, pos_slices, center_irc
+    return ct_chunk, center_irc, pos_slices
 
 
 @raw_cache.memoize(typed=True)
@@ -328,10 +328,10 @@ def get_ct_augmented_candidate(
     use_cache: bool = True
 ):
     if use_cache:
-        ct_chunk, _, center_irc = get_ct_raw_candidate(series_uid, center_xyz, width_irc)
+        ct_chunk, center_irc, _pos_slices = get_ct_raw_candidate(series_uid, center_xyz, width_irc)
     else:
         ct = get_ct(series_uid)
-        ct_chunk, _, center_irc = ct.get_raw_candidate(center_xyz, width_irc)
+        ct_chunk, center_irc, _pos_slices = ct.get_raw_candidate(center_xyz, width_irc)
     ct_chunk = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
     
     transform_t = torch.eye(n=4)
@@ -453,21 +453,21 @@ class Luna3DClassificationDataset(Dataset):
         # variables useful for balancing the dataset
         self.ratio = ratio
         self.neg_list = \
-            [nt for nt in self.candidateInfo_list if not nt.isNodule_bool]
+            [nt for nt in self.candidates_info if not nt.is_nodule]
         self.pos_list = \
-            [nt for nt in self.candidateInfo_list if nt.isNodule_bool]
+            [nt for nt in self.candidates_info if nt.is_nodule]
         self.ben_list = \
-            [nt for nt in self.pos_list if not nt.isMal_bool]
+            [nt for nt in self.pos_list if not nt.is_malignant]
         self.mal_list = \
-            [nt for nt in self.pos_list if nt.isMal_bool]
+            [nt for nt in self.pos_list if nt.is_malignant]
 
         print("{!r}: {} {} samples, {} neg, {} pos, {} ratio".format(
             self,
-            len(self.candidateInfo_list),
+            len(self.candidates_info),
             "validation" if is_val_set else "training",
             len(self.neg_list),
             len(self.pos_list),
-            '{}:1'.format(self.ratio_int) if self.ratio_int else 'unbalanced'
+            '{}:1'.format(self.ratio) if self.ratio else 'unbalanced'
         ))
     def __len__(self):
         if self.ratio:
@@ -505,22 +505,28 @@ class Luna3DClassificationDataset(Dataset):
             pos_ix = ix // (self.ratio + 1)
             if ix % (self.ratio + 1):
                 neg_ix = ix - 1 - pos_ix
-                neg_ix %= len(self.negative_list)
-                candidate_info = self.negative_list[neg_ix]
+                neg_ix %= len(self.neg_list)
+                candidate_info = self.neg_list[neg_ix]
             else:
-                pos_ix %= len(self.positive_list)
-                candidate_info = self.positive_list[pos_ix]
+                pos_ix %= len(self.pos_list)
+                candidate_info = self.pos_list[pos_ix]
         else:
             candidate_info = self.candidates_info[ix]
 
         width_irc = (32, 48, 48)
 
-        ct_chunk, center_irc = get_ct_augmented_candidate(augmentation=self.augmentations,
-                                                          series_uid=candidate_info.series_uid,
-                                                          center_xyz=candidate_info.center_xyz,
-                                                          width_irc=width_irc,
-                                                          use_cache=False # Caching Augmentations take too much disk space
-                                                          )
+        if self.augmentations:
+            ct_chunk, center_irc = get_ct_augmented_candidate(augmentation=self.augmentations,
+                                                            series_uid=candidate_info.series_uid,
+                                                            center_xyz=candidate_info.center_xyz,
+                                                            width_irc=width_irc,
+                                                            use_cache=False # Caching Augmentations take too much disk space
+                                                            )
+        else:
+            ct = get_ct(candidate_info.series_uid)
+            ct_chunk, center_irc, _pos_slices = ct.get_raw_candidate(candidate_info.center_xyz, width_irc)
+            # Cached version
+            # ct_chunk, center_irc, _pos_slices = get_ct_raw_candidate(candidate_info.series_uid, candidate_info.center_xyz, width_irc)
         
         label = torch.tensor([
             not candidate_info.is_nodule,
@@ -825,7 +831,7 @@ class SegmentationAugmentation(nn.Module):
 if __name__ == '__main__':
     
     # CONFIG
-    show_images = True
+    show_images = False
     
     # -----------------------------------------------------------------------------------
     # EXPLORE RAW DATA
@@ -862,8 +868,13 @@ if __name__ == '__main__':
                                     add_rectangular=[center_irc, round(example_candidate.diameter_mm)])
         
     # Verify sizes of images
-    candidates_series = list(set([c.series_uid for c in candidates]))
-    candidate_indexes = [Ct(series_uid).hu.shape for series_uid in candidates_series]
+    # candidates_series = list(set([c.series_uid for c in candidates]))
+    # candidate_indexes = [Ct(series_uid).hu.shape for series_uid in candidates_series]
+    
+    # Create cache of all images
+    # for example_candidate in candidates:
+    #     ct_chunk, center_irc, _pos_slices = get_ct_raw_candidate(example_candidate.series_uid, example_candidate.center_xyz, width_irc)
+    
     
     # -----------------------------------------------------------------------------------
     # LUNA DATASET FOR CLASSIFICATION
@@ -875,7 +886,7 @@ if __name__ == '__main__':
 
     train_ds = Luna3DClassificationDataset(val_stride=10,
                             is_val_set=False,
-                            augmentations=CONFIG.cls_training.classification_augmentation)
+                            augmentations=CONFIG.cls_training.augmentation)
     
     print(f'LEN of LUNA DATASET: {len(train_ds)}')
     
@@ -913,6 +924,41 @@ if __name__ == '__main__':
         print(len(series_uid), len(center_list))
         break
     
+    # Calculate _dataset for model training purpose
+    _ds = Luna3DClassificationDataset(val_stride=10,
+                                     is_val_set=False, 
+                                     ratio=1)
+    pos_count, neg_count = 0, 0
+    pos_save, neg_save = True, True
+    dev_samples = []
+    for i, sample in enumerate(_ds):
+        ct_chunk, label, series_uid, center_irc = sample
+        if label[0].item() == 1:
+            if pos_count == 32:
+                pos_save = False
+            if pos_save:
+                dev_samples.append([ct_chunk, label, series_uid, center_irc])
+                pos_count+=1
+        else:
+            if neg_count == 32:
+                neg_save = False
+            if neg_save:
+                dev_samples.append([ct_chunk, label, series_uid, center_irc])
+                neg_count += 1
+        if not pos_save and not neg_save:
+            break
+        if i % 8 == 0:
+            print(f'Searched samples: {i} | neg: {neg_count} | pos: {pos_count}')
+        
+    import pickle
+    with open('.data/.dev/classifier/val_16.pkl', 'wb') as f:
+        pickle.dump(random.sample(dev_samples, 16), f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    with open('.data/.dev/classifier/train_64.pkl', 'wb') as f:
+        pickle.dump(dev_samples, f, protocol=pickle.HIGHEST_PROTOCOL)
+        
+
+            
     # -----------------------------------------------------------------------------------
     # LUNA DATASET FOR SEGMENTATION
     # -----------------------------------------------------------------------------------
