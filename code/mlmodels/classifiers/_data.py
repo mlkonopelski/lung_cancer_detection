@@ -26,18 +26,19 @@ class Dev3DClassifierDataset(Dataset):
 
 class DevClassifierTrainingApp:
     
-    def __init__(self, model, lr=float, batch_size: int = 32) -> None:
+    def __init__(self, model, optimizer: torch.optim.Optimizer, batch_size: int = 32) -> None:
         self.time_str = datetime.datetime.now().strftime('%Y%m%d%H%M')
         self.device = 'cpu'
         
         self.model = model
         self.batch_size = batch_size
         self.loss_fn = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.SGD(params=self.model.parameters(), lr=lr, momentum=0.9)
+        self.optimizer = optimizer
         self.total_trn_samples_count = 0
         self.total_val_samples_count = 0
         
-        self.trn_ds = Dev3DClassifierDataset('.data/.dev/classifier/train_64.pkl')  # train_10
+        self.trn_ds = Dev3DClassifierDataset('.data/.dev/classifier/train_64.pkl')
+        
         self.trn_dl = DataLoader(self.trn_ds, batch_size=batch_size, shuffle=True, pin_memory=True, )
         self.val_ds = Dev3DClassifierDataset('.data/.dev/classifier/val_16.pkl')
         self.val_dl = DataLoader(self.trn_ds, batch_size=batch_size, shuffle=True, pin_memory=True)

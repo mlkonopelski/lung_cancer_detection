@@ -57,10 +57,27 @@ class DepthwiseConv1Version(nn.Module):
 
 
 class DepthwiseConv(nn.Module):
-    def __init__(self, in_features: int, stride: int, activation: nn.Module = nn.ReLU) -> None:
+    def __init__(self, 
+                 in_features: int, 
+                 stride: int, 
+                 activation: nn.Module = nn.ReLU, 
+                 conv_block: nn.Module = nn.Conv2d, 
+                 bn_block: nn.Module = nn.BatchNorm2d) -> None:
+        """A standard convolution both filters and combines inputs into a new set of outputs in one step. 
+        The depthwise separable convolution splits this into two layers, 
+        a separate layer for filtering and a separate layer for combining. 
+        This factorization has the effect of drastically reducing computation and model size.
+
+        Args:
+            in_features (int): _description_
+            stride (int): _description_
+            activation (nn.Module, optional): _description_. Defaults to nn.ReLU.
+            conv_block (nn.Module, optional): _description_. Defaults to nn.Conv2d.
+            bn_block (nn.Module, optional): _description_. Defaults to nn.BatchNorm2d.
+        """
         super().__init__()
-        self.depth_conv = nn.Conv2d(in_features, in_features, kernel_size=3, stride=stride, padding=1, groups=in_features)
-        self.depth_bn = nn.BatchNorm2d(in_features)
+        self.depth_conv = conv_block(in_features, in_features, kernel_size=3, stride=stride, padding=1, groups=in_features)
+        self.depth_bn = bn_block(in_features)
         self.activation = activation()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -70,10 +87,25 @@ class DepthwiseConv(nn.Module):
         return x
 
 class PointwiseConv(nn.Module):
-    def __init__(self, in_features: int, out_features: int, activation: nn.Module = nn.ReLU) -> None:
+    def __init__(self, 
+                 in_features: int, 
+                 out_features: int, 
+                 activation: nn.Module = nn.ReLU, 
+                 conv_block: nn.Module = nn.Conv2d, 
+                 bn_block: nn.Module = nn.BatchNorm2d) -> None:
+        """Tradiitional Convolution operation with kernel_size = 1 used to 
+        expand # channels in Mobile block after Depthwise operation. 
+
+        Args:
+            in_features (int): # features in
+            out_features (int): # features out
+            activation (nn.Module, optional): Activation function. Defaults to nn.ReLU.
+            conv_block (nn.Module, optional): Convolution block. Defaults to nn.Conv2d.
+            bn_block (nn.Module, optional): Normalization block. Defaults to nn.BatchNorm2d.
+        """
         super().__init__()
-        self.point_conv = nn.Conv2d(in_features, out_features, kernel_size=1, stride=1, padding=0)
-        self.point_bn = nn.BatchNorm2d(out_features)
+        self.point_conv = conv_block(in_features, out_features, kernel_size=1, stride=1, padding=0)
+        self.point_bn = bn_block(out_features)
         self.activation = activation()
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:

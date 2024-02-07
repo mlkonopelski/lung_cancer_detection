@@ -76,7 +76,9 @@ if __name__ == '__main__':
     
     # Test model on sample DL:
     from _data import DevClassifierTrainingApp    
-    DevClassifierTrainingApp(model, lr=0.01, batch_size=32).run(epochs=1000)
+    DevClassifierTrainingApp(model, 
+                             optimizer=torch.optim.SGD(params=model.parameters(), lr=0.01, momentum=0.9)
+                             ).run(epochs=1000)
     
 # epoch: 100 
 #  train: loss: 0.6934208273887634 | acc: 0.5
