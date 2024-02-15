@@ -4,6 +4,7 @@ import glob
 import math
 import os
 import random
+import datetime
 from collections import namedtuple
 from functools import lru_cache
 from typing import Dict, List, NamedTuple, Tuple, Union
@@ -235,11 +236,13 @@ class Ct(CtBase):
         Returns:
             Tupple[ArrayLike, ArrayLike]: (New chunk with nodule in the middle, center of nodule using IRC coordinates)
         """
+        # print(f'3-3-1-2-1: {datetime.datetime.now()}')
         center_irc = CtConversion.xyz2irc(center_xyz, 
                                           self.origin_xyz, 
                                           self.vx_size_xyz, 
                                           self.direction)
         slice_list = []
+        # print(f'3-3-1-2-2: {datetime.datetime.now()}')
         for axis, center_val in enumerate(center_irc):
             # Based on center_irc and width_irc calculate start and end of chunk ix.
             start_ndx = int(round(center_val - width_irc[axis]/2))
@@ -260,8 +263,10 @@ class Ct(CtBase):
                 start_ndx = int(self.hu.shape[axis] - width_irc[axis])
             
             slice_list.append(slice(start_ndx, end_ndx))
+        # print(f'3-3-1-2-3: {datetime.datetime.now()}')
         ct_chunk = self.hu[tuple(slice_list)] # Use slices in 3 dimensions to cut chunk out of whole Ct Scan
         pos_slices = self.positive_mask[tuple(slice_list)] # Use slices in 3 dimensions to choose positive mask of each nodule
+        # print(f'3-3-1-2-4: {datetime.datetime.now()}')
         return ct_chunk, center_irc, pos_slices
     
     def build_annotation_mask(self, nodule_list, threshold_hu: int = -700):
@@ -309,8 +314,11 @@ def get_ct(series_uid: str):
 
 @raw_cache.memoize(typed=True)
 def get_ct_raw_candidate(series_uid: str, center_xyz: NamedTuple, width_irc: Tuple) -> Tuple:
+    # print(f'3-3-1-1: {datetime.datetime.now()}')
     ct = get_ct(series_uid)
+    # print(f'3-3-1-2: {datetime.datetime.now()}')
     ct_chunk, center_irc, pos_slices = ct.get_raw_candidate(center_xyz, width_irc)
+    # print(f'3-3-1-3: {datetime.datetime.now()}')
     return ct_chunk, center_irc, pos_slices
 
 
@@ -329,25 +337,32 @@ def get_ct_augmented_candidate(
 ):
     if use_cache:
         ct_chunk, center_irc, _pos_slices = get_ct_raw_candidate(series_uid, center_xyz, width_irc)
+        # print(f'3-3-1: {datetime.datetime.now()}')
     else:
         ct = get_ct(series_uid)
         ct_chunk, center_irc, _pos_slices = ct.get_raw_candidate(center_xyz, width_irc)
-    ct_chunk = torch.tensor(ct_chunk).unsqueeze(0).unsqueeze(0).to(torch.float32)
+        # print(f'3-3-2: {datetime.datetime.now()}')
+        
+    ct_chunk = ct_chunk.clone().unsqueeze(0).unsqueeze(0).to(torch.float32)
     
     transform_t = torch.eye(n=4)
     
+    print(f'3-4: {datetime.datetime.now()}')
     for i in range(3):
         if 'flip' in augmentation:
             if random.random() > 0.5:
                 transform_t[i, i] *= -1
+            print(f'3-5: {datetime.datetime.now()}')
         if 'offset' in augmentation:
             offset_float = augmentation['offset']
             random_float = (random.random() * 2 - 1)
-            transform_t[i, 3] = offset_float * random_float            
+            transform_t[i, 3] = offset_float * random_float
+            print(f'3-6: {datetime.datetime.now()}')          
         if 'scale' in augmentation:
             scale_float = augmentation['scale']
             random_float = (random.random() * 2 -1)
             transform_t[i, i] = 1.0 + scale_float * random_float
+            print(f'3-7: {datetime.datetime.now()}')       
         if 'rotate' in augmentation:
             angle_rad = random.random() * math.pi * 2
             s = math.sin(angle_rad)
@@ -359,22 +374,26 @@ def get_ct_augmented_candidate(
                 [0, 0, 0, 1]
             ])
             transform_t @= rotation_t
+            print(f'3-8: {datetime.datetime.now()}') 
         if 'noise' in augmentation:
             noise_t = torch.randn_like(ct_chunk)
             noise_t *= augmentation['noise']
             ct_chunk += noise_t
+            print(f'3-9: {datetime.datetime.now()}') 
     
     affine_t = F.affine_grid(
         transform_t[:3].unsqueeze(0).to(torch.float32),
         ct_chunk.size(),
         align_corners=False,
     )
+    print(f'3-10: {datetime.datetime.now()}') 
     augmented_chunk = F.grid_sample(
         input=ct_chunk,
         grid=affine_t,
         padding_mode='border',
         align_corners=False,
-    ).to('cpu')
+    ).to('cpu') # TODO:
+    print(f'3-11: {datetime.datetime.now()}') 
 
     return augmented_chunk[0], center_irc
     
@@ -401,8 +420,7 @@ def validate_augmentations(augmentations: Dict) -> Dict:
             raise Warning(f'Noise ratio out of range <0, 100> and will be removed from list')
 
     return augmentations
-    
-
+  
 class Luna3DClassificationDataset(Dataset):
     def __init__(self, 
                  val_stride: int = 0,
@@ -501,6 +519,7 @@ class Luna3DClassificationDataset(Dataset):
         Returns:
             Tuple: with 4 elements chategorizing each sample: (X, y, uid, center_irc)
         """
+        # print(f'\t3-1: {datetime.datetime.now()}')
         if self.ratio:
             pos_ix = ix // (self.ratio + 1)
             if ix % (self.ratio + 1):
@@ -514,20 +533,21 @@ class Luna3DClassificationDataset(Dataset):
             candidate_info = self.candidates_info[ix]
 
         width_irc = (32, 48, 48)
-
+        # print(f'3-2: {datetime.datetime.now()}')
         if self.augmentations:
             ct_chunk, center_irc = get_ct_augmented_candidate(augmentation=self.augmentations,
                                                             series_uid=candidate_info.series_uid,
                                                             center_xyz=candidate_info.center_xyz,
                                                             width_irc=width_irc,
-                                                            use_cache=False # Caching Augmentations take too much disk space
+                                                            use_cache=True # Caching Augmentations take too much disk space
                                                             )
         else:
-            ct = get_ct(candidate_info.series_uid)
-            ct_chunk, center_irc, _pos_slices = ct.get_raw_candidate(candidate_info.center_xyz, width_irc)
-            # Cached version
-            # ct_chunk, center_irc, _pos_slices = get_ct_raw_candidate(candidate_info.series_uid, candidate_info.center_xyz, width_irc)
-        
+        #     ct = get_ct(candidate_info.series_uid)
+        #     ct_chunk, center_irc, _pos_slices = ct.get_raw_candidate(candidate_info.center_xyz, width_irc)
+          # Cached version
+          ct_chunk, center_irc, _pos_slices = get_ct_raw_candidate(candidate_info.series_uid, candidate_info.center_xyz, width_irc)
+          ct_chunk = ct_chunk.unsqueeze(0).to(torch.float32)
+
         label = torch.tensor([
             not candidate_info.is_nodule,
             candidate_info.is_nodule
