@@ -1,5 +1,5 @@
 general:
-  device: mps
+  device: cpu
   dev: True
 paths:
   data: .data
@@ -8,10 +8,10 @@ paths:
   model_checkpoints: .model/checkpoints
   best_model: .model/best
 cls_training:
-  epochs: 10
-  iter_per_epoch: 50000
+  epochs: 2
+  iter_per_epoch: 8
   early_stopping: 3
-  batch_size: 16
+  batch_size: 4
   num_workers: 1
   balanced: True
   augmentation:

@@ -479,19 +479,21 @@ class Luna3DClassificationDataset(Dataset):
         self.mal_list = \
             [nt for nt in self.pos_list if nt.is_malignant]
 
-        print("{!r}: {} {} samples, {} neg, {} pos, {} ratio".format(
-            self,
-            len(self.candidates_info),
-            "validation" if is_val_set else "training",
-            len(self.neg_list),
-            len(self.pos_list),
-            '{}:1'.format(self.ratio) if self.ratio else 'unbalanced'
-        ))
+        print("{!r}: {} {} samples, {} neg, {} pos, {} ratio, augmentations {}".format(
+                    self,
+                    len(self.candidates_info),
+                    "validation" if is_val_set else "training",
+                    len(self.neg_list),
+                    len(self.pos_list),
+                    '{}:1'.format(self.ratio) if self.ratio else 'unbalanced',
+                    self.augmentations
+                ))
     def __len__(self):
-        if self.ratio:
-            return CONFIG.cls_training.iter_per_epoch
-        else:
-            return len(self.candidates_info)
+        return CONFIG.cls_training.iter_per_epoch
+        # if self.ratio:
+        #     return CONFIG.cls_training.iter_per_epoch
+        # else:
+        #     return len(self.candidates_info)
 
     def shuffle_samples(self):
         if self.ratio:

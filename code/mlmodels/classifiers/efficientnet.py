@@ -5,10 +5,13 @@ from typing import Union, List, NamedTuple, Callable
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from mobilenet import DepthwiseConv, PointwiseConv
-from senet import SENet
 from torchinfo import summary
 from torchvision.ops.stochastic_depth import StochasticDepth
+
+import sys
+sys.path.append('code/mlmodels/classifiers')
+from mobilenet import DepthwiseConv, PointwiseConv
+from senet import SENet
 
 STAGE = namedtuple('block', 'layers,out_features,stride,kernel,expansion')
 
@@ -26,7 +29,7 @@ scaling = namedtuple('v', 'depth_multiplier,width_multiplier,dropout')
 
 SCALLING = {
     'en-b0': scaling(1.0, 1.0, 0.2),
-    'en-b1': scaling(1,0, 1.1, 0.2),
+    'en-b1': scaling(1.0, 1.1, 0.2),
     'en-b2': scaling(1.1, 1.2, 0.2),
     'en-b3': scaling(1.2, 1.4, 0.2),
     'en-b4': scaling(1.4, 1.8, 0.2),
@@ -125,7 +128,7 @@ class EfficientNet(nn.Module):
             nn.Linear(in_features=1280, out_features=labels)
         )
 
-    def _adjust_architecture(arch, scalling):
+    def _adjust_architecture(self, arch, scalling):
 
         width_m = scalling.width_multiplier
         depth_m = scalling.depth_multiplier
