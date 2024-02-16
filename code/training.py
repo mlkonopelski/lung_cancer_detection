@@ -7,6 +7,7 @@ from timeit import timeit
 from abc import ABC, abstractmethod
 from typing import Dict, List
 from pathlib import Path
+import wandb
 
 import scipy.ndimage as ndimage
 
@@ -15,6 +16,7 @@ import torch
 import torch.nn as nn
 from data import CandidateInfo, Ct, CtConversion, Luna3DClassificationDataset, TrainLuna2DSegmentationDataset, BaseLuna2DSegmentationDataset, SegmentationAugmentation, get_ct
 from mlmodels.classifiers import base_cnn
+from mlmodels.classifiers import efficientnet
 from mlmodels.segmentation import unet
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -41,7 +43,7 @@ METRICS_SIZE = 10
 
 
 class BaseTrainingApp(ABC):
-    def __init__(self, Model: nn.Module, sys_argv=None) -> None:
+    def __init__(self, m: nn.Module, sys_argv=None) -> None:
         # TODO: Write all Docstrings in TrainingApp
         
         self.dev = CONFIG.general.dev
@@ -69,24 +71,23 @@ class BaseTrainingApp(ABC):
         
         self.total_training_samples_count = 0
         
-        self.model = self._init_model(Model)
+        # self.model = self._init_model(Model)
+        self.model = m.to(self.device)
         self.augmentation_model = None
         self.optimizer = self._init_optimizer()
         self._init_tensorboard_writers()
         
         
-    def _init_model(self, Model):
+    # def _init_model(self, Model):
         
-        """Helper method to instantiate ML model. 
-        In future (when more models will be developed) 
-        the selection will be based on config.yml or cmd line arguments
+    #     """Helper method to instantiate ML model. 
+    #     In future (when more models will be developed) 
+    #     the selection will be based on config.yml or cmd line arguments
 
-        Returns:
-            _type_: instance of nn.Module model
-        """
-        model = Model()
-        model = model.to(self.device)
-        return model 
+    #     Returns:
+    #         _type_: instance of nn.Module model
+    #     """
+    #     return model 
         
     @abstractmethod    
     def _init_optimizer(self):
@@ -122,15 +123,21 @@ class BaseTrainingApp(ABC):
 
     def _compute_loss(self, batch_ndx, batch, metrics):
         input, labels, _series_list, _center_list = batch
+        # print(f'6: {datetime.datetime.now()}')
         input = input.to(self.device)
+        # print(f'7: {datetime.datetime.now()}')
         labels = labels.to(self.device)
+        # print(f'8: {datetime.datetime.now()}')
         
         if self.model.training and self.augmentation_model:
             input, labels = self.augmentation_model(input, labels)
+            # print(f'8,5: {datetime.datetime.now()}')
 
+        # start = time.time()
         logits, probabilities = self.model(input)
+        # print(f'9: {datetime.datetime.now()}')
         loss = self.loss_fn(logits, labels)
-        
+        # print(f'10: {datetime.datetime.now()}')
         metrics = self._calculate_batch_metrics(metrics, probabilities, labels, loss, batch_ndx)
                 
         return loss.mean(), metrics
@@ -138,8 +145,11 @@ class BaseTrainingApp(ABC):
     def _calculate_batch_metrics(self, metrics, probabilities, labels, loss, batch_ndx):
         start_ndx = batch_ndx * CONFIG.cls_training.batch_size
         end_ndx = start_ndx + labels.size(0)
+        # print(f'11: {datetime.datetime.now()}')
         accuracy = probabilities[:, 1].detach() > self.classification_threshold == labels[:,1].detach() 
+        # print(f'12: {datetime.datetime.now()}')
         metrics[METRICS_ACCURACY, start_ndx:end_ndx] = accuracy
+        # print(f'13: {datetime.datetime.now()}')
         return metrics
     
     def _calculate_epoch_metrics(self, epoch_ndx, mode_str, metrics_t, start):
@@ -164,24 +174,43 @@ class BaseTrainingApp(ABC):
                          dataformats='HWC')
 
     def _do_training(self, epoch_ix, dl):
-        start = time.time()
+        epoch_start = time.time()
+        # print(f'1: {datetime.datetime.now()}')
         self.model.train()
+        # print(f'2: {datetime.datetime.now()}')
         epoch_raw_metrics = torch.zeros(
             self.metrics_size,
             len(dl.dataset),
             device=CONFIG.general.device
         )
+        # print(f'3: {datetime.datetime.now()}')
+        print(f'\t- Samples: {len(dl.dataset)}')
+        batch_start = time.time()
         for batch_ix, batch in enumerate(dl):
+            # print(f'\t\t- batch_size: {batch[0].size()}')
+            # print(f'4: {datetime.datetime.now()}')
+            print(f'\t\t\t- data processing: {time.time() - batch_start}')
+            fitting_start = time.time()
             self.optimizer.zero_grad()
+            # print(f'5: {datetime.datetime.now()}')
             loss_var, epoch_raw_metrics = self._compute_loss(batch_ix, batch, metrics=epoch_raw_metrics)
+            # print(f'14: {datetime.datetime.now()}')
             loss_var.backward()
+            # print(f'15: {datetime.datetime.now()}')
             self.optimizer.step()
-        
-        epoch_metrics = self._calculate_epoch_metrics(epoch_ndx=epoch_ix, mode_str='train', metrics_t=epoch_raw_metrics, start=start)
+            # print(f'16: {datetime.datetime.now()}')
+            print(f'\t\t\t- model fitting: {time.time() - fitting_start}')
+            print(f'\t\t- batch:{batch_ix} in {time.time() - batch_start}')
+            batch_start = time.time()
+
+        epoch_metrics = self._calculate_epoch_metrics(epoch_ndx=epoch_ix, mode_str='train', metrics_t=epoch_raw_metrics, start=epoch_start)
         self._write_epoch_metrics(mode_str='train', metrics_dict=epoch_metrics)
+        # wandb.log(epoch_metrics)
         self.total_training_samples_count += len(dl.dataset)
+        print(f'\t\t- epoch: finished in {time.time() - epoch_start}')
 
     def _do_validation(self, epoch_ix, dl):
+        epoch_start = time.time()
         with torch.no_grad():
             self.model.eval()
             epoch_raw_metrics = torch.zeros(
@@ -192,10 +221,11 @@ class BaseTrainingApp(ABC):
             for batch_ix, batch in enumerate(dl):
                 start = time.time()
                 _loss_var, epoch_raw_metrics =  self._compute_loss(batch_ix, batch, metrics=epoch_raw_metrics)
-                
-            epoch_metrics = self._calculate_epoch_metrics(epoch_ndx=epoch_ix, mode_str='val', metrics_t=epoch_raw_metrics, start=start)
+                print(f'\t\t- batch:{batch_ix} in {time.time() - start}')
+
+            epoch_metrics = self._calculate_epoch_metrics(epoch_ndx=epoch_ix, mode_str='val', metrics_t=epoch_raw_metrics, start=epoch_start)
             self._write_epoch_metrics(mode_str='val', metrics_dict=epoch_metrics)
-            
+            # wandb.log(epoch_metrics)
             self.epoch_score = epoch_metrics[self.scoring_metric]
           
 
@@ -226,9 +256,15 @@ class BaseTrainingApp(ABC):
         train_dl = self._init_dl(mode='train')
         val_dl = self._init_dl(mode='val')
 
+        print(self.device)
+
         for epoch_ix in range(1, CONFIG.cls_training.epochs+1):
+            print(f'EPOCH: {epoch_ix}')
+            print(f'\t- Starting Training')
             self._do_training(epoch_ix, train_dl)
+            print(f'\t- Starting Validation')
             self._do_validation(epoch_ix, val_dl)
+            print(f'\t- SCORE: {self.epoch_score}')
             if self.epoch_score > self.best_score:
                 self.save_model(epoch_ix)
             if epoch_ix == 1 or epoch_ix % self.validation_cadence == 0:
@@ -263,7 +299,7 @@ class ClassificationTrainingApp(BaseTrainingApp):
         assert mode in ['train', 'val']
 
         balance_ratio = 1 if CONFIG.cls_training.balanced else None
-        augmentation_dict = CONFIG.cls_training.classification_augmentation if CONFIG.cls_training.classification_augmentation else {}
+        augmentation_dict = CONFIG.cls_training.augmentation if CONFIG.cls_training.augmentation else {}
         
         # This part is used only for development process to speed up the testing and validation of each part. 
         # It might be removed in future when the repositoty will be project will be ready. 
@@ -272,7 +308,7 @@ class ClassificationTrainingApp(BaseTrainingApp):
                 ds = Luna3DClassificationDataset(val_stride=10,
                                                  is_val_set=False,
                                                  ratio=balance_ratio,
-                                                 augmentations=augmentation_dict,
+                                                #  augmentations=augmentation_dict,
                                                  series_uid=EXAMPLE_UID)
             elif mode == 'val':
                 ds = Luna3DClassificationDataset(val_stride=10,
@@ -535,5 +571,6 @@ class SegmentationTrainingApp(BaseTrainingApp):
 
 if __name__ == '__main__':
 
-    ClassificationTrainingApp(Model=base_cnn.CNN).main()
-    SegmentationTrainingApp(Model=unet.UNETLuna).main()
+    model = efficientnet.EfficientNet(efficientnet.STAGES_V1, efficientnet.SCALLING['en-b7'], dim='3d')
+    ClassificationTrainingApp(Model=model).main()
+    #SegmentationTrainingApp(Model=unet.UNETLuna).main()

@@ -11,6 +11,35 @@ This is a pet project for building cv models from scratch instead of using built
 The goal **is not** to compare performance between those models because I'm lacking resources to fully test them (espcially methods on full CT scan)  
 Additional goal is the deploy the model as application simmilar to what I would do in real world scenario and that would include tests/cicd/rest-api/model-repository but this is a secondary goal and I will include those parts as I go. 
 
+## Algorithms
+As of now following models are manually implemented:
+1. classifiers
+    - lenet
+    - resnet
+    - vgg
+    - resnet
+    - inception
+    - senet
+    - mobilenet
+    - efficientnet
+1. segmenation
+    - unet
+1. detections
+    - yolo v1, v2
+
+**Next in line:**
+1. classifiers:
+    - Any Transofrmer based e.g. Swin Transformer
+1. segmenation
+    - R-CNN
+    - Fast R-CNN
+    - Faster R-CNN
+    - MMDetections [only implementation]
+    - YOLO-SAM [only implementation]
+1. detections
+    - darknet/YOLOv8 [only implementation]
+    - ultralytics/YOLOv8
+
 ## Data
 Detailed description of the data is available here: https://luna16.grand-challenge.org  
 What is imporatant is that full dataset containes only 888 CT scans and still takes over 100GB of space. This is why running it on "home resources" is a challange and free solutions like Google Colab are also require a bit of shenaningans. 
