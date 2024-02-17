@@ -1,8 +1,9 @@
 import torch
 import torch.nn as nn
-from typing import List, Dict
+from typing import List, Dict, Union
 from dataclasses import dataclass
-import random 
+import random
+from torchinfo import summary
 
 @dataclass
 class BoundingBox:
@@ -213,13 +214,91 @@ class YOLOv1(nn.Module):
         return x
 
 
+class DarknetConv(nn.Module):
+    
+    def __init__(self, depth: int, in_channels: int, out_channels: Union[None, int]= None) -> None:
+        super().__init__()
+        self.depth = depth
+        self.layer_list = nn.ModuleList()
+
+        first_layer_channels = (in_channels, in_channels * 2 if depth > 1 else out_channels)
+        even_layer_channels = (in_channels * 2, in_channels)
+
+        for d in range(1, depth + 1):
+            if d % 2 != 0:
+                self.layer_list.append(nn.Conv2d(in_channels=first_layer_channels[0],
+                                                out_channels=first_layer_channels[1],
+                                                kernel_size=3, padding=1))
+                self.layer_list.append(nn.BatchNorm2d(num_features=first_layer_channels[1]))
+            else:
+                self.layer_list.append(nn.Conv2d(in_channels=even_layer_channels[0],
+                                                out_channels=even_layer_channels[1],
+                                                kernel_size=1))
+                self.layer_list.append(nn.BatchNorm2d(num_features=even_layer_channels[1]))
+        self.leaky_relu = nn.LeakyReLU(negative_slope=0.1)            
+
+    def forward(self, x):
+        for layer in self.layer_list:
+            x = layer(x)
+            x = self.leaky_relu(x)
+        
+        return x
+
+
+class Darknet19(nn.Module):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        self.conv_list = [DarknetConv(1, 3, 32),
+                          DarknetConv(1, 32, 64),
+                          DarknetConv(3, 64),
+                          DarknetConv(3, 128),
+                          DarknetConv(5, 256),
+                          DarknetConv(5, 512)]
+
+        self.max_pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
+    def _concatenate(self, skip, x):
+        sub_layer1 = skip[:, :, :13, :13]
+        sub_layer2 = skip[:, :, 13:, :13]
+        sub_layer3 = skip[:, :, :13, 13:]
+        sub_layer4 = skip[:, :, 13:, 13:]
+        out = torch.cat([sub_layer1, sub_layer2, sub_layer3, sub_layer4], dim=1)
+        
+        return torch.cat([out, x], dim=1)
+        
+
+    def forward(self, x):
+        for i, conv_layer in enumerate(self.conv_list[:-1]):
+            x = conv_layer(x)
+            if i == 4:
+                pass_through = x
+            x = self.max_pool(x)
+        x = self.conv_list[-1](x) # last layer without max pooling
+        x = self._concatenate(pass_through, x)
+        assert x.size() == torch.Size([x.size()[0], 3072, 13, 13])
+        return x
+
+
+class YOLOv2(nn.Module):
+    def __init__(self, classes: int, anchor_boxes: int = 5) -> None:
+        super().__init__()
+        self.darknet19 = Darknet19()
+        self.output = nn.Conv2d(in_channels=...,
+                                out_channels=anchor_boxes*(5+classes),
+                                kernel_size=1)
+
+    def forward(self, x):
+        return x
+
+
 if __name__ == '__main__':
 
     # Test IOU
     bb1 = BoundingBox(0.8, 10, 10, 4, 5, 0)
     bb2 = BoundingBox(0.6, 11, 11, 4, 5, 0)
     iou = intersaction_over_union(bb1, bb2)
-    print(f'test iou: {iou}')
+    # print(f'test iou: {iou}')
 
     # Test NMS
     B = []
@@ -232,7 +311,7 @@ if __name__ == '__main__':
         c = random.choice([0, 1, 2, 3, 4])
         B.append(BoundingBox(condfidance, x, y, w, h, c))
     B_final = non_maximum_suppression(B, iou_treshold=0.5)
-    print(f'final BB: {B_final}')
+    # print(f'final BB: {B_final}')
 
     # YOLOv1
     X =  torch.rand(1, 3, 448, 448)
@@ -255,4 +334,15 @@ if __name__ == '__main__':
             )
 
     B_final = non_maximum_suppression(B)
-    print(f'final BB: {B_final}')
+    # print(f'final BB: {B_final}')
+
+    # YOLO v2
+    X = torch.rand(1, 3, 224, 224)
+    darknet_conv = DarknetConv(1, 3, 32)
+    out = darknet_conv(X)
+    X = torch.rand(1, 64, 56, 56)
+    darknet_conv =  DarknetConv(3, 64)
+    out = darknet_conv(X)
+    X = torch.rand(1, 3, 416, 416)
+    darknet19 = Darknet19()
+    out = darknet19(X)

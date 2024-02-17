@@ -25,3 +25,20 @@ Loss:
 
 Training:  
 Pre-train on ImageNet (input: 224x224) and resize for 448x448.
+
+
+## YOLOv2
+Paper = [YOLO9000:Better, Faster, Stronger](https://arxiv.org/pdf/1612.08242.pdf)
+Best explanation: [ML For Nerds](https://youtu.be/PYpn1GSwWnc?si=KNbSMY83vhjo154b)
+
+Key changes from YOLOv1:  
+![alt text](resources/yolov2-newfeatures.png "Arch")  
+
+1. batch norm - Batch Normalisation after each convolution layer instead of Dropout layer
+2. hi-res classifier - train backbone classifier on ImageNet 448x448 instead of 224x224
+3. convolutional - the whole network is based on convolutional layers (without fc at the head). This enables more output parameters and is flexible with input sizes (must be 32x)
+4. new network - Instead of using VGG as backbone they use Darknet-19 (nothing fancy but smaller and more accurate)
+5. dimension priors - before training all bounding boxes are fit with k-means (k=5) to find typical scale and ratio. Those 5 boes are used as anchor boxes
+6. location prediction - instead of predicting w&h in reagrds to image 0,0 position w&h are calculated in regards to anchor boxes 0,0. Also now each bounding box has it's own onehot class vector
+7. passthrough - Simmilar to resnet there is a skip connection from middle of network to deeper layer so initial information are not lost with decreasing size. In order to do that the bigger dimension image (dim x dim x depth) is divided into 4 and stacked on top of each other creating (dim/4 x dim/4 x depth*4)
+8. hi-res detector - instead of grid cell 7 they do 13x13 and therefore are able to
