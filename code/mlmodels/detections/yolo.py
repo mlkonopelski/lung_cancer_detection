@@ -258,6 +258,30 @@ class Darknet19(nn.Module):
 
         self.max_pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
+    def forward(self, x):
+        for i, conv_layer in enumerate(self.conv_list[:-1]):
+            x = conv_layer(x)
+            if i == 4:
+                pass_through = x
+            x = self.max_pool(x)
+        x = self.conv_list[-1](x) # last layer without max pooling
+        return x, pass_through
+
+
+class YOLOv2(nn.Module):
+    def __init__(self, classes: int, anchor_boxes: int = 5) -> None:
+        super().__init__()
+        self.darknet19 = Darknet19()
+        self.conv = nn.ModuleList()
+        for _ in range(3):
+            self.conv.append(nn.Sequential(
+                nn.Conv2d(1024, 1024, 3, padding=1),
+                nn.BatchNorm2d(1024)
+            ))
+        self.output = nn.Conv2d(in_channels=3072,
+                                out_channels=anchor_boxes*(5+classes),
+                                kernel_size=1)
+
     def _concatenate(self, skip, x):
         sub_layer1 = skip[:, :, :13, :13]
         sub_layer2 = skip[:, :, 13:, :13]
@@ -266,30 +290,20 @@ class Darknet19(nn.Module):
         out = torch.cat([sub_layer1, sub_layer2, sub_layer3, sub_layer4], dim=1)
         
         return torch.cat([out, x], dim=1)
-        
-
+    
     def forward(self, x):
-        for i, conv_layer in enumerate(self.conv_list[:-1]):
-            x = conv_layer(x)
-            if i == 4:
-                pass_through = x
-            x = self.max_pool(x)
-        x = self.conv_list[-1](x) # last layer without max pooling
+        x, pass_through = self.darknet19(x)
+        for c_l in self.conv:
+            x = c_l(x)
         x = self._concatenate(pass_through, x)
-        assert x.size() == torch.Size([x.size()[0], 3072, 13, 13])
+        x = self.output(x)
         return x
 
-
-class YOLOv2(nn.Module):
-    def __init__(self, classes: int, anchor_boxes: int = 5) -> None:
-        super().__init__()
-        self.darknet19 = Darknet19()
-        self.output = nn.Conv2d(in_channels=...,
-                                out_channels=anchor_boxes*(5+classes),
-                                kernel_size=1)
-
-    def forward(self, x):
-        return x
+def batch_processing(bbox):
+    '''
+    useful implementation: https://github.com/longcw/yolo2-pytorch/blob/master/darknet.py
+    '''
+    return ...
 
 
 if __name__ == '__main__':
@@ -337,12 +351,6 @@ if __name__ == '__main__':
     # print(f'final BB: {B_final}')
 
     # YOLO v2
-    X = torch.rand(1, 3, 224, 224)
-    darknet_conv = DarknetConv(1, 3, 32)
-    out = darknet_conv(X)
-    X = torch.rand(1, 64, 56, 56)
-    darknet_conv =  DarknetConv(3, 64)
-    out = darknet_conv(X)
-    X = torch.rand(1, 3, 416, 416)
-    darknet19 = Darknet19()
-    out = darknet19(X)
+    yolo_v2 = YOLOv2(classes=20)
+    out = yolo_v2(X)
+    assert out.size == torch.Size([1, 125, 13, 13])
