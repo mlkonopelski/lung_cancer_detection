@@ -26,6 +26,7 @@ As of now following models are manually implemented:
     - unet
 1. detections
     - yolo v1, v2
+    - ultralytics/YOLOv8 [only implementation]
 
 **Next in line:**
 1. classifiers:
@@ -38,7 +39,6 @@ As of now following models are manually implemented:
     - YOLO-SAM [only implementation]
 1. detections
     - darknet/YOLOv8 [only implementation]
-    - ultralytics/YOLOv8
 
 ## Data
 Detailed description of the data is available here: https://luna16.grand-challenge.org  
