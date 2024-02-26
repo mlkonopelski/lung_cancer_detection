@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import List, Dict, Union, Tuple, Optional
 from dataclasses import dataclass
 import random
@@ -111,6 +112,7 @@ def intersaction_over_union_from_arrays(clusters: np.ndarray, box: np.ndarray) -
     iou = i_area / t_area
 
     return iou
+
 
 def non_maximum_suppression(B: List[Dict], iou_treshold: float = 0.5, confidence_treshold: float = 0.5):
     """
@@ -290,8 +292,8 @@ class YOLOTensorCreator(nn.Module):
     
     def read_image_as_tensor(self, id: str):
         img = cv2.imread(os.path.join(self.path, id + self.img_format)) 
-        img_resized = cv2.resize(img, (448, 448), interpolation = cv2.INTER_LINEAR)
-        return torch.from_numpy(img_resized).permute(2, 0, 1)
+        img_resized = cv2.resize(img, (416, 416), interpolation = cv2.INTER_LINEAR)
+        return torch.from_numpy(img_resized).permute(2, 0, 1).to(torch.float)
 
     def _save_bboxes_on_img(self, img):
         img_print = img.permute(1, 2, 0).numpy()
@@ -306,7 +308,91 @@ class YOLOTensorCreator(nn.Module):
         
         return img, labels
     
+
+class YOLOv2Loss(nn.Module):
+    def __init__(self, converter: YOLOTensorCreator) -> None:
+        super().__init__()
+        self.converter = converter
+        self.lambda_no_object = 1.0
+        self.lambda_object    = 5.0
+        self.lambda_coord     = 1.0
+        self.lambda_class     = 1.0
+        
+    def _loss_class(self, truth, pred):
+        return (self.lambda_class / self.N_l) * ((truth * torch.log(pred)).sum(3)).sum(2).sum(1)
     
+    def _loss_xywh(self, truth, pred, conf_truth):
+       
+        xy_truth, xy_pred = truth[:,:,:,:2], pred[:,:,:,:2]
+        wh_truth, wh_pred = truth[:,:,:,2:], pred[:,:,:,2:]
+
+        xy_loss = torch.pow(xy_truth - xy_pred, 2).sum(3)
+        wh_loss = torch.pow(torch.sqrt(wh_truth) - torch.sqrt(wh_pred), 2).sum(3) # wh_truth is sometimes 
+        # wh_loss = torch.pow(wh_truth -wh_pred, 2).sum(3)
+
+        xywh_loss = xy_loss + wh_loss
+        xywh_loss = (conf_truth * xywh_loss).sum(2).sum(1)        
+        return (self.lambda_coord / self.N_l) * xywh_loss
+    
+    def _offsets_to_original(self, tensor: torch.Tensor, conf_truth) -> torch.Tensor:
+        
+        truth_mask = conf_truth.unsqueeze(-1).expand_as(tensor)
+        
+        x_grid_offset = (torch.arange(0, 13) / 13).unsqueeze(-1).expand(-1, 13).flatten().unsqueeze(-1).expand(-1, 5)
+        x = tensor[:,:,:, 0] + x_grid_offset
+        
+        y_grid_offset = torch.cat([torch.arange(0, 13) / 13 for _ in range(13)]).unsqueeze(-1).expand(-1, 5)
+        y = tensor[:,:,:, 1] + y_grid_offset
+        
+        w_anchors = torch.Tensor([value['w'] for _, value in self.converter.anchor_boxes.items()]).expand(13*13, -1)
+        w = w_anchors * torch.exp(tensor[:,:,:, 2])
+        
+        h_anchors = torch.Tensor([value['h'] for _, value in self.converter.anchor_boxes.items()]).expand(13*13, -1)
+        h = h_anchors * torch.exp(tensor[:,:,:, 3])
+
+        return torch.cat([x.unsqueeze(-1), y.unsqueeze(-1), w.unsqueeze(-1), h.unsqueeze(-1)], 3) * truth_mask
+
+    def _intersaction_over_union_from_batch(self, truth: torch.Tensor, pred: torch.Tensor):
+        
+        truth_wh_half = truth[:, :, :, 2:] / 2
+        truth_xy_min = truth[:, :, :, :2] - truth_wh_half
+        truth_xy_max = truth[:, :, :, 2:] + truth_wh_half
+        truth_area = truth[:, :, :, 2] * truth[:, :, :, 3]
+        
+        pred_wh_half = pred[:, :, :, 2:] / 2
+        pred_xy_min = pred[:, :, :, :2] - pred_wh_half
+        pred_xy_max = pred[:, :, :, 2:] + pred_wh_half
+        pred_area = pred[:, :, :, 1] * pred[:, :, :, 2]
+
+        i_min = torch.max(truth_xy_min, pred_xy_min)
+        i_max = torch.min(truth_xy_max, pred_xy_max)
+        i_wh = torch.where(i_max - i_min < 0, 0, i_max - i_min)
+        i_area = i_wh[:,:,:,0] * i_wh[:,:,:,1]
+        
+        total_area = truth_area + pred_area - i_area
+        total_area = torch.where(total_area == 0, 1e-6, total_area)
+        iou = i_area / total_area
+        return iou
+    
+    def _loss_conf(self, truth, pred, xywh_truth, xywh_pred):
+        iou = self._intersaction_over_union_from_batch(xywh_truth, xywh_pred)
+        loss_obj = self.lambda_object * truth * (iou - pred)
+        loss_no_obj = self.lambda_no_object * torch.where(truth == 1, 0, 1) * (0 - pred)
+        return loss_obj.sum(2).sum(1) + loss_no_obj.sum(2).sum(1)
+        
+    def forward(self, xywh_truth, xywh_pred, conf_truth, conf_pred, class_truth, class_pred):
+        
+        xywh_truth = self._offsets_to_original(xywh_truth, conf_truth)
+        xywh_pred = self._offsets_to_original(xywh_pred, conf_truth)
+        
+        self.N_l = conf_truth[:,:,:].sum()
+        
+        loss_xywh = self._loss_xywh(xywh_truth, xywh_pred, conf_truth)
+        loss_class = self._loss_class(class_truth, class_pred)
+        loss_conf = self._loss_conf(conf_truth, conf_pred, xywh_truth, xywh_pred)
+        
+        return loss_conf + loss_xywh + loss_class
+
 class YOLOv1(nn.Module):
     def __init__(self, c: int, b: int = 2, s: int = 7) -> None:
         """
@@ -462,6 +548,8 @@ class Darknet19(nn.Module):
 class YOLOv2(nn.Module):
     def __init__(self, classes: int, anchor_boxes: int = 5) -> None:
         super().__init__()
+        self.classes = classes
+        self.anchor_boxes = anchor_boxes
         self.darknet19 = Darknet19()
         self.conv = nn.ModuleList()
         for _ in range(3):
@@ -469,6 +557,8 @@ class YOLOv2(nn.Module):
                 nn.Conv2d(1024, 1024, 3, padding=1),
                 nn.BatchNorm2d(1024)
             ))
+        self.global_average_pool = nn.AvgPool2d((1, 1))
+        
         self.output = nn.Conv2d(in_channels=3072,
                                 out_channels=anchor_boxes*(5+classes),
                                 kernel_size=1)
@@ -488,7 +578,17 @@ class YOLOv2(nn.Module):
             x = c_l(x)
         x = self._concatenate(pass_through, x)
         x = self.output(x)
-        return x
+
+        # resize the array for loss calculations: 5D: batch_size x grid_size * grid_size, anchor_boxes x 5 + classes
+        batch_size = x.shape[0]
+        x = x.permute(0, 2, 3, 1).contiguous().view(batch_size, -1, self.anchor_boxes, 5 + self.classes)
+        xy_pred = F.sigmoid(x[:,:,:,1:3])
+        wh_pred = torch.exp(x[:,:,:,3:5])
+        bbox_pred = torch.cat([xy_pred, wh_pred], dim=3)
+        confidence_pred = F.sigmoid(x[:,:,:,0])
+        class_pred = F.softmax(x[:,:,:,5:], 3)
+        
+        return bbox_pred, confidence_pred, class_pred
 
 
 
@@ -502,54 +602,23 @@ def batch_processing(bbox):
 
 
 if __name__ == '__main__':
-    import glob
-    # YOLO v2
+    # import glob
+    # yolo_creator = YOLOTensorCreator('.data/traffic-signs/train')
+    # for id_path in glob.glob('.data/traffic-signs/train/*.txt'):
+    #     id = os.path.basename(id_path).replace('.txt','')
+    #     X, y = yolo_creator(id=id)
+
     yolo_creator = YOLOTensorCreator('.data/traffic-signs/train')
-    for id_path in glob.glob('.data/traffic-signs/train/*.txt'):
-        id = os.path.basename(id_path).replace('.txt','')
-        X, y = yolo_creator(id=id)
+    X, y = yolo_creator(id='00001')
+    print(yolo_creator.anchor_boxes)
     
-    # Test IOU
-    bb1 = BoundingBox(0.8, 10, 10, 4, 5, 0)
-    bb2 = BoundingBox(0.6, 11, 11, 4, 5, 0)
-    iou = intersaction_over_union(bb1, bb2)
+    yolo_v2 = YOLOv2(classes=4)
+    
+    y_loss = y.reshape(1, 13*13, 5, -1)
+    bbox_truth, confidence_truth, class_truth = y_loss[:,:,:,1:5], y_loss[:,:,:,0], y_loss[:,:,:,5:] 
+    bbox_pred, confidence_pred, class_pred = yolo_v2(X.unsqueeze(0))
+    
 
-    # Test NMS
-    B = []
-    for _ in range(200):
-        condfidance = random.random()
-        x = random.randint(8, 10)
-        y = random.randint(8, 10)
-        w = random.randint(8, 10)
-        h = random.randint(8, 10)
-        c = random.choice([0, 1, 2, 3, 4])
-        B.append(BoundingBox(condfidance, x, y, w, h, c))
-    B_final = non_maximum_suppression(B, iou_treshold=0.5)
-    # print(f'final BB: {B_final}')
-
-    # YOLOv1
-    X =  torch.rand(1, 3, 448, 448)
-    yolo_v1 = YOLOv1(c=3)
-    out = yolo_v1(X)
-    B = []
-    for img in range(out.shape[0]):
-        c = torch.argmax(out[img, :, :, 10:], dim=2).flatten()
-        B_array = out[img, :, :, :10].reshape(-1, 5)
-        for i, bb in enumerate(B_array):
-            B.append(
-                BoundingBox(
-                    confidence=bb[0],
-                    x=bb[0],
-                    y=bb[1],
-                    w=bb[2],
-                    h=bb[3],
-                    c=c[i//2]
-                )
-            )
-
-    B_final = non_maximum_suppression(B)
-    # print(f'final BB: {B_final}')
-
-    # yolo_v2 = YOLOv2(classes=20)
-    # out = yolo_v2(X)
-    # assert out.size == torch.Size([1, 125, 13, 13])
+    loss_fn = YOLOv2Loss(converter=yolo_creator)
+    loss = loss_fn(bbox_truth,  bbox_pred, confidence_truth, confidence_pred, class_truth, class_pred)
+    loss
