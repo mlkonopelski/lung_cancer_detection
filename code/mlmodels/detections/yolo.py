@@ -10,6 +10,8 @@ import cv2
 import numpy as np
 # from sklearn.cluster import KMeans
 import math
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
 
 @dataclass
 class BoundingBox:
@@ -174,14 +176,14 @@ def non_maximum_suppression(B: List[Dict], iou_treshold: float = 0.5, confidence
     return B_FINAL
 
 
-class YOLOTensorCreator(nn.Module):
+class YOLOv2TensorCreator(nn.Module):
     def __init__(self, 
                  path: str, 
                  label_format: str = '.txt',
                  img_format: str = '.jpg', 
                  grid_size: int = 13,
                  anchor_boxes: int = 5,
-                 out_size: Tuple[int, int] = (448, 488),
+                 out_size: Tuple[int, int] = (416, 416),
                  *args,
                  **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -190,11 +192,21 @@ class YOLOTensorCreator(nn.Module):
         self.img_format = img_format
         self.grid_size = grid_size
         self.anchor_boxes_count = anchor_boxes
+        if out_size[0] % 32 != 0 or  out_size[1] % 32 != 0:
+            raise Exception('The input size needs to be x32')
         self.out_size = out_size
+    
+        # run helper method which will be used in Dataset.__getitem__
+        self.files_id = self._file_id_list()
     
         # run helper methods to prepare class before __call__
         self._create_list_of_labels()
         self._find_anchor_boxes()
+    
+    def _file_id_list(self):
+        labels_files = [file.replace(f'{self.label_format}', '') for file in os.listdir(self.path) if file.endswith(f'{self.label_format}')]
+        img_files = [file.replace(f'{self.img_format}', '') for file in os.listdir(self.path) if file.endswith(f'{self.img_format}')]
+        return list(set(labels_files).intersection(img_files))
     
     def _create_list_of_labels(self):
         labels_files = [file for file in os.listdir(self.path) if file.endswith(f'{self.label_format}')]
@@ -310,7 +322,7 @@ class YOLOTensorCreator(nn.Module):
     
 
 class YOLOv2Loss(nn.Module):
-    def __init__(self, converter: YOLOTensorCreator) -> None:
+    def __init__(self, converter: YOLOv2TensorCreator) -> None:
         super().__init__()
         self.converter = converter
         self.lambda_no_object = 1.0
@@ -327,27 +339,27 @@ class YOLOv2Loss(nn.Module):
         wh_truth, wh_pred = truth[:,:,:,2:], pred[:,:,:,2:]
 
         xy_loss = torch.pow(xy_truth - xy_pred, 2).sum(3)
-        wh_loss = torch.pow(torch.sqrt(wh_truth) - torch.sqrt(wh_pred), 2).sum(3) # wh_truth is sometimes 
-        # wh_loss = torch.pow(wh_truth -wh_pred, 2).sum(3)
+        # wh_loss = torch.pow(torch.sqrt(wh_truth) - torch.sqrt(wh_pred), 2).sum(3) # wh_truth is sometimes 
+        wh_loss = torch.pow(wh_truth - wh_pred, 2).sum(3)
 
         xywh_loss = xy_loss + wh_loss
         xywh_loss = (conf_truth * xywh_loss).sum(2).sum(1)        
         return (self.lambda_coord / self.N_l) * xywh_loss
     
-    def _offsets_to_original(self, tensor: torch.Tensor, conf_truth) -> torch.Tensor:
+    def _offsets_to_original(self, tensor: torch.Tensor, conf_truth, device) -> torch.Tensor:
         
         truth_mask = conf_truth.unsqueeze(-1).expand_as(tensor)
         
-        x_grid_offset = (torch.arange(0, 13) / 13).unsqueeze(-1).expand(-1, 13).flatten().unsqueeze(-1).expand(-1, 5)
+        x_grid_offset = (torch.arange(0, 13) / 13).unsqueeze(-1).expand(-1, 13).flatten().unsqueeze(-1).expand(-1, 5).to(device)
         x = tensor[:,:,:, 0] + x_grid_offset
         
-        y_grid_offset = torch.cat([torch.arange(0, 13) / 13 for _ in range(13)]).unsqueeze(-1).expand(-1, 5)
+        y_grid_offset = torch.cat([torch.arange(0, 13) / 13 for _ in range(13)]).unsqueeze(-1).expand(-1, 5).to(device)
         y = tensor[:,:,:, 1] + y_grid_offset
         
-        w_anchors = torch.Tensor([value['w'] for _, value in self.converter.anchor_boxes.items()]).expand(13*13, -1)
+        w_anchors = torch.Tensor([value['w'] for _, value in self.converter.anchor_boxes.items()]).expand(13*13, -1).to(device)
         w = w_anchors * torch.exp(tensor[:,:,:, 2])
         
-        h_anchors = torch.Tensor([value['h'] for _, value in self.converter.anchor_boxes.items()]).expand(13*13, -1)
+        h_anchors = torch.Tensor([value['h'] for _, value in self.converter.anchor_boxes.items()]).expand(13*13, -1).to(device)
         h = h_anchors * torch.exp(tensor[:,:,:, 3])
 
         return torch.cat([x.unsqueeze(-1), y.unsqueeze(-1), w.unsqueeze(-1), h.unsqueeze(-1)], 3) * truth_mask
@@ -382,16 +394,20 @@ class YOLOv2Loss(nn.Module):
         
     def forward(self, xywh_truth, xywh_pred, conf_truth, conf_pred, class_truth, class_pred):
         
-        xywh_truth = self._offsets_to_original(xywh_truth, conf_truth)
-        xywh_pred = self._offsets_to_original(xywh_pred, conf_truth)
+        DEVICE = xywh_truth.device
         
-        self.N_l = conf_truth[:,:,:].sum()
+        xywh_truth = self._offsets_to_original(xywh_truth, conf_truth, DEVICE)
+        xywh_pred = self._offsets_to_original(xywh_pred, conf_truth, DEVICE)
+        
+        self.N_l = conf_truth.sum(2).sum(1)
         
         loss_xywh = self._loss_xywh(xywh_truth, xywh_pred, conf_truth)
         loss_class = self._loss_class(class_truth, class_pred)
         loss_conf = self._loss_conf(conf_truth, conf_pred, xywh_truth, xywh_pred)
         
-        return loss_conf + loss_xywh + loss_class
+        loss = loss_class # +loss_conf + loss_xywh 
+        
+        return torch.mean(loss)
 
 class YOLOv1(nn.Module):
     def __init__(self, c: int, b: int = 2, s: int = 7) -> None:
@@ -523,15 +539,14 @@ class DarknetConv(nn.Module):
 
 
 class Darknet19(nn.Module):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-
-        self.conv_list = [DarknetConv(1, 3, 32),
+    def __init__(self) -> None:
+        super().__init__()
+        self.conv_list = nn.ModuleList([DarknetConv(1, 3, 32),
                           DarknetConv(1, 32, 64),
                           DarknetConv(3, 64),
                           DarknetConv(3, 128),
                           DarknetConv(5, 256),
-                          DarknetConv(5, 512)]
+                          DarknetConv(5, 512)])
 
         self.max_pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
@@ -591,34 +606,65 @@ class YOLOv2(nn.Module):
         return bbox_pred, confidence_pred, class_pred
 
 
+class YOLOv2Dataset(Dataset):
+    def __init__(self, img_path: str, transform: nn.Module = None) -> None:
+        super().__init__()
+        self.yolo_creator = YOLOv2TensorCreator(img_path) # '.data/traffic-signs/train'
+        self.files = self.yolo_creator.files_id
+        self.transform = transform
 
 
+    def __len__(self):
+        return len(self.files)
 
-def batch_processing(bbox):
-    '''
-    useful implementation: https://github.com/longcw/yolo2-pytorch/blob/master/darknet.py
-    '''
-    return ...
+    def __getitem__(self, idx):
+       X, y = self.yolo_creator(id=self.files[idx])
+       if self.transform:
+           X = self.transform(X)
+       return X, y
+
+def training_yolov2(device='cpu', epochs:int = 2, batch_size: int = 32):
+    
+    transformations = transforms.Compose([
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+        transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+    ])
+    
+    train_dataset = YOLOv2Dataset(img_path='.data/traffic-signs/train', transform=transformations)
+    train_dataloader = DataLoader(train_dataset, batch_size, shuffle=True)
+    
+    yolov2 = YOLOv2(classes=train_dataset.yolo_creator.classes_count).to(device=device)
+    loss_fn = YOLOv2Loss(converter=train_dataset.yolo_creator)
+    
+    optimizer = torch.optim.SGD(yolov2.parameters(), lr=0.001, momentum=0.9)
+    torch.autograd.set_detect_anomaly(True)
+    
+    for epoch_ix in range(1, epochs+1):
+        for batch_idx, (X, y) in enumerate(train_dataloader):
+            
+            optimizer.zero_grad()
+            
+            X, y = X.to(device=device), y.reshape(X.shape[0], 13*13, 5, -1).to(device=device)            
+            bbox_truth, confidence_truth, class_truth = y[:,:,:,1:5], y[:,:,:,0], y[:,:,:,5:]
+            bbox_pred, confidence_pred, class_pred = yolov2(X)
+            loss = loss_fn(bbox_truth,  bbox_pred, confidence_truth, confidence_pred, class_truth, class_pred)
+            
+            loss.backward()
+            optimizer.step()
+            
+            print(f'\tbatch"{batch_idx} loss:{loss}')
+        print(f'epoch:{epoch_ix} loss:{loss}')
 
 
 if __name__ == '__main__':
-    # import glob
-    # yolo_creator = YOLOTensorCreator('.data/traffic-signs/train')
-    # for id_path in glob.glob('.data/traffic-signs/train/*.txt'):
-    #     id = os.path.basename(id_path).replace('.txt','')
-    #     X, y = yolo_creator(id=id)
 
-    yolo_creator = YOLOTensorCreator('.data/traffic-signs/train')
-    X, y = yolo_creator(id='00001')
-    print(yolo_creator.anchor_boxes)
+    # yolo_v2 = YOLOv2(classes=4)
+    # yolo_creator = YOLOv2TensorCreator('.data/traffic-signs/train')
+    # X, y = yolo_creator(id='00001')
+    # y_loss = y.reshape(1, 13*13, 5, -1)
+    # bbox_truth, confidence_truth, class_truth = y_loss[:,:,:,1:5], y_loss[:,:,:,0], y_loss[:,:,:,5:] 
+    # bbox_pred, confidence_pred, class_pred = yolo_v2(X.unsqueeze(0))
+    # loss_fn = YOLOv2Loss(converter=yolo_creator)
+    # loss = loss_fn(bbox_truth,  bbox_pred, confidence_truth, confidence_pred, class_truth, class_pred)
     
-    yolo_v2 = YOLOv2(classes=4)
-    
-    y_loss = y.reshape(1, 13*13, 5, -1)
-    bbox_truth, confidence_truth, class_truth = y_loss[:,:,:,1:5], y_loss[:,:,:,0], y_loss[:,:,:,5:] 
-    bbox_pred, confidence_pred, class_pred = yolo_v2(X.unsqueeze(0))
-    
-
-    loss_fn = YOLOv2Loss(converter=yolo_creator)
-    loss = loss_fn(bbox_truth,  bbox_pred, confidence_truth, confidence_pred, class_truth, class_pred)
-    loss
+    training_yolov2(device='mps', epochs=2)
