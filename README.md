@@ -25,7 +25,8 @@ As of now following models are manually implemented:
 1. segmenation
     - unet
 1. detections
-    - yolo v1, v2
+    - yolo v1, v2 - [todo: autograd not converging]
+    - r-cnn - [todo: build custom SVM which supports batch training]
     - ultralytics/YOLOv8 [only implementation]
 
 **Next in line:**
