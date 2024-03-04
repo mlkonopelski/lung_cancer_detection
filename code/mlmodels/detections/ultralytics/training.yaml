@@ -10,8 +10,8 @@ data: # (str, optional) path to data file, i.e. coco128.yaml
 epochs: 100 # (int) number of epochs to train for
 time: # (float, optional) number of hours to train for, overrides epochs if supplied
 patience: 50 # (int) epochs to wait for no observable improvement for early stopping of training
-batch: 16 # (int) number of images per batch (-1 for AutoBatch)
-imgsz: 640 # (int | list) input images size as int for train and val modes, or list[w,h] for predict and export modes
+batch: 32 # (int) number of images per batch (-1 for AutoBatch)
+imgsz: 512 # (int | list) input images size as int for train and val modes, or list[w,h] for predict and export modes
 save: True # (bool) save train checkpoints and predict results
 save_period: -1 # (int) Save checkpoint every x epochs (disabled if < 1)
 cache: False # (bool) True/ram, disk or False. Use cache for data loading
@@ -58,7 +58,7 @@ source: # (str, optional) source directory for images or videos
 vid_stride: 1 # (int) video frame-rate stride
 stream_buffer: False # (bool) buffer all streaming frames (True) or return the most recent frame (False)
 visualize: False # (bool) visualize model features
-augment: False # (bool) apply image augmentation to prediction sources
+augment: True # (bool) apply image augmentation to prediction sources
 agnostic_nms: False # (bool) class-agnostic NMS
 classes: # (int | list[int], optional) filter results by class, i.e. classes=0, or classes=[0,2,3]
 retina_masks: False # (bool) use high-resolution segmentation masks

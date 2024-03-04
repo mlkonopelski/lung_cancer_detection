@@ -9,10 +9,8 @@ model = YOLO("yolov8n.yaml", verbose=True)  # build a new model from scratch
 
 
 model.train(data='code/mlmodels/detections/ultralytics/luna.yaml', 
-            cfg = 'code/mlmodels/detections/ultralytics/training.yaml',
-            epochs=100,
-            # device='mps'
-            )  # train the model
+            cfg = 'code/mlmodels/detections/ultralytics/training.yaml'
+            )
 metrics = model.val()  # evaluate model performance on the validation set
 results = model("code/mlmodels/detections/ultralytics/.data/images/train/1.3.6.1.4.1.14519.5.2.1.6279.6001.100398138793540579077826395208.png")  # predict on an image
 
