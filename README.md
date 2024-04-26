@@ -29,18 +29,17 @@ As of now following models are manually implemented:
     - R-CNN - [todo: build custom SVM which supports batch training]
     - Fast R-CNN
     - ultralytics/YOLOv8 [only implementation]
+    - darknet/YOLO [only implementation]
 
 **Next in line:**
 1. classifiers:
     - Any Transofrmer based e.g. Swin Transformer
 1. segmenation
-    - R-CNN
-    - Fast R-CNN
-    - Faster R-CNN
     - MMDetections [only implementation]
     - YOLO-SAM [only implementation]
 1. detections
-    - darknet/YOLOv8 [only implementation]
+    - Faster R-CNN
+    - YOLOv5
 
 ## Data
 Detailed description of the data is available here: https://luna16.grand-challenge.org  
