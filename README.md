@@ -40,7 +40,7 @@ As of now following models are manually implemented:
     - YOLO-SAM [only implementation]
 1. detections
     - Faster R-CNN
-    - YOLOv5
+
 
 ## Data
 Detailed description of the data is available here: https://luna16.grand-challenge.org  
