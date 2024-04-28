@@ -8,6 +8,8 @@
 .model
 .drafts
 TODO
+.configs
+*.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

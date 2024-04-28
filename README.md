@@ -26,6 +26,7 @@ As of now following models are manually implemented:
     - unet
 1. detections
     - YOLO v2 - [todo: autograd not converging]
+    - YOLO v5 - [solo model]
     - R-CNN - [todo: build custom SVM which supports batch training]
     - Fast R-CNN
     - ultralytics/YOLOv8 [only implementation]

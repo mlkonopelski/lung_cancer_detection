@@ -12,6 +12,7 @@ import numpy as np
 import math
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
+import warnings
 
 @dataclass
 class BoundingBox:
@@ -656,15 +657,471 @@ def training_yolov2(device='cpu', epochs:int = 2, batch_size: int = 32):
         print(f'epoch:{epoch_ix} loss:{loss}')
 
 
+# -------------------------------------------------
+#   simplified YOLO V5 based on Ultralytics
+# -------------------------------------------------
+
+def initialize_weights(model):
+    """Initializes weights of Conv2d, BatchNorm2d, and activations (Hardswish, LeakyReLU, ReLU, ReLU6, SiLU) in the
+    model.
+    """
+    for m in model.modules():
+        t = type(m)
+        if t is nn.Conv2d:
+            pass  # nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        elif t is nn.BatchNorm2d:
+            m.eps = 1e-3
+            m.momentum = 0.03
+        elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
+            m.inplace = True
+
+def make_divisible(x, divisor):
+    """Adjusts `x` to be divisible by `divisor`, returning the nearest greater or equal value."""
+    if isinstance(divisor, torch.Tensor):
+        divisor = int(divisor.max())  # to int
+    return math.ceil(x / divisor) * divisor
+
+def autopad(k, p=None, d=1):
+    """
+    Pads kernel to 'same' output shape, adjusting for optional dilation; returns padding size.
+
+    `k`: kernel, `p`: padding, `d`: dilation.
+    """
+    if d > 1:
+        k = d * (k - 1) + 1 if isinstance(k, int) else [d * (x - 1) + 1 for x in k]  # actual kernel-size
+    if p is None:
+        p = k // 2 if isinstance(k, int) else [x // 2 for x in k]  # auto-pad
+    return p
+
+def check_anchor_order(m):
+    """Checks and corrects anchor order against stride in YOLOv5 Detect() module if necessary."""
+    a = m.anchors.prod(-1).mean(-1).view(-1)  # mean anchor area per output layer
+    da = a[-1] - a[0]  # delta a
+    ds = m.stride[-1] - m.stride[0]  # delta s
+    if da and (da.sign() != ds.sign()):  # same order
+        m.anchors[:] = m.anchors.flip(0)
+        
+def scale_img(img, ratio=1.0, same_shape=False, gs=32):  # img(16,3,256,416)
+    """Scales an image tensor `img` of shape (bs,3,y,x) by `ratio`, optionally maintaining the original shape, padded to
+    multiples of `gs`.
+    """
+    if ratio == 1.0:
+        return img
+    h, w = img.shape[2:]
+    s = (int(h * ratio), int(w * ratio))  # new size
+    img = F.interpolate(img, size=s, mode="bilinear", align_corners=False)  # resize
+    if not same_shape:  # pad/crop img
+        h, w = (math.ceil(x * ratio / gs) * gs for x in (h, w))
+    return F.pad(img, [0, w - s[1], 0, h - s[0]], value=0.447)  # value = imagenet mean
+
+
+
+class Conv(nn.Module):
+    # Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)
+    default_act = nn.SiLU()  # default activation
+
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
+        """Initializes a standard convolution layer with optional batch normalization and activation."""
+        super().__init__()
+        self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        self.bn = nn.BatchNorm2d(c2)
+
+
+class DWConv(Conv):
+    # Depth-wise convolution
+    def __init__(self, c1, c2, k=1, s=1, d=1, act=True):
+        """Initializes a depth-wise convolution layer with optional activation; args: input channels (c1), output
+        channels (c2), kernel size (k), stride (s), dilation (d), and activation flag (act).
+        """
+        super().__init__(c1, c2, k, s, g=math.gcd(c1, c2), d=d, act=act)
+
+
+class DWConvTranspose2d(nn.ConvTranspose2d):
+    # Depth-wise transpose convolution
+    def __init__(self, c1, c2, k=1, s=1, p1=0, p2=0):
+        """Initializes a depth-wise transpose convolutional layer for YOLOv5; args: input channels (c1), output channels
+        (c2), kernel size (k), stride (s), input padding (p1), output padding (p2).
+        """
+        super().__init__(c1, c2, k, s, p1, p2, groups=math.gcd(c1, c2))
+
+
+class Bottleneck(nn.Module):
+    # Standard bottleneck
+    def __init__(self, c1, c2, shortcut=True, g=1, e=0.5):
+        """Initializes a standard bottleneck layer with optional shortcut and group convolution, supporting channel
+        expansion.
+        """
+        super().__init__()
+        c_ = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv2 = Conv(c_, c2, 3, 1, g=g)
+        self.add = shortcut and c1 == c2
+
+    def forward(self, x):
+        """Processes input through two convolutions, optionally adds shortcut if channel dimensions match; input is a
+        tensor.
+        """
+        return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
+
+
+class C3(nn.Module):
+    # CSP Bottleneck with 3 convolutions
+    def __init__(self, c1, c2, n=1, shortcut=True, g=1, e=0.5):
+        """Initializes C3 module with options for channel count, bottleneck repetition, shortcut usage, group
+        convolutions, and expansion.
+        """
+        super().__init__()
+        c_ = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv2 = Conv(c1, c_, 1, 1)
+        self.cv3 = Conv(2 * c_, c2, 1)  # optional act=FReLU(c2)
+        self.m = nn.Sequential(*(Bottleneck(c_, c_, shortcut, g, e=1.0) for _ in range(n)))
+
+    def forward(self, x):
+        """Performs forward propagation using concatenated outputs from two convolutions and a Bottleneck sequence."""
+        return self.cv3(torch.cat((self.m(self.cv1(x)), self.cv2(x)), 1))
+
+    
+class SPPF(nn.Module):
+    # Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher
+    def __init__(self, c1, c2, k=5):
+        """
+        Initializes YOLOv5 SPPF layer with given channels and kernel size for YOLOv5 model, combining convolution and
+        max pooling.
+
+        Equivalent to SPP(k=(5, 9, 13)).
+        """
+        super().__init__()
+        c_ = c1 // 2  # hidden channels
+        self.cv1 = Conv(c1, c_, 1, 1)
+        self.cv2 = Conv(c_ * 4, c2, 1, 1)
+        self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
+
+    def forward(self, x):
+        """Processes input through a series of convolutions and max pooling operations for feature extraction."""
+        x = self.cv1(x)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # suppress torch 1.9.0 max_pool2d() warning
+            y1 = self.m(x)
+            y2 = self.m(y1)
+            return self.cv2(torch.cat((x, y1, y2, self.m(y2)), 1))
+
+    
+class Concat(nn.Module):
+    # Concatenate a list of tensors along dimension
+    def __init__(self, dimension=1):
+        """Initializes a Concat module to concatenate tensors along a specified dimension."""
+        super().__init__()
+        self.d = dimension
+
+    def forward(self, x):
+        """Concatenates a list of tensors along a specified dimension; `x` is a list of tensors, `dimension` is an
+        int.
+        """
+        return torch.cat(x, self.d)
+
+
+class Proto(nn.Module):
+    # YOLOv5 mask Proto module for segmentation models
+    def __init__(self, c1, c_=256, c2=32):
+        """Initializes YOLOv5 Proto module for segmentation with input, proto, and mask channels configuration."""
+        super().__init__()
+        self.cv1 = Conv(c1, c_, k=3)
+        self.upsample = nn.Upsample(scale_factor=2, mode="nearest")
+        self.cv2 = Conv(c_, c_, k=3)
+        self.cv3 = Conv(c_, c2)
+
+    def forward(self, x):
+        """Performs a forward pass using convolutional layers and upsampling on input tensor `x`."""
+        return self.cv3(self.cv2(self.upsample(self.cv1(x))))
+
+
+class Detect(nn.Module):
+    # YOLOv5 Detect head for detection models
+    stride = None  # strides computed during build
+    dynamic = False  # force grid reconstruction
+    export = False  # export mode
+
+    def __init__(self, nc=80, anchors=(), ch=(), inplace=True):
+        """Initializes YOLOv5 detection layer with specified classes, anchors, channels, and inplace operations."""
+        super().__init__()
+        self.nc = nc  # number of classes
+        self.no = nc + 5  # number of outputs per anchor
+        self.nl = len(anchors)  # number of detection layers
+        self.na = len(anchors[0]) // 2  # number of anchors
+        self.grid = [torch.empty(0) for _ in range(self.nl)]  # init grid
+        self.anchor_grid = [torch.empty(0) for _ in range(self.nl)]  # init anchor grid
+        self.register_buffer("anchors", torch.tensor(anchors).float().view(self.nl, -1, 2))  # shape(nl,na,2)
+        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+        self.inplace = inplace  # use inplace ops (e.g. slice assignment)
+
+    def forward(self, x):
+        """Processes input through YOLOv5 layers, altering shape for detection: `x(bs, 3, ny, nx, 85)`."""
+        z = []  # inference output
+        for i in range(self.nl):
+            x[i] = self.m[i](x[i])  # conv
+            bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
+            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+
+            if not self.training:  # inference
+                if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
+                    self.grid[i], self.anchor_grid[i] = self._make_grid(nx, ny, i)
+
+                if isinstance(self, Segment):  # (boxes + masks)
+                    xy, wh, conf, mask = x[i].split((2, 2, self.nc + 1, self.no - self.nc - 5), 4)
+                    xy = (xy.sigmoid() * 2 + self.grid[i]) * self.stride[i]  # xy
+                    wh = (wh.sigmoid() * 2) ** 2 * self.anchor_grid[i]  # wh
+                    y = torch.cat((xy, wh, conf.sigmoid(), mask), 4)
+                else:  # Detect (boxes only)
+                    xy, wh, conf = x[i].sigmoid().split((2, 2, self.nc + 1), 4)
+                    xy = (xy * 2 + self.grid[i]) * self.stride[i]  # xy
+                    wh = (wh * 2) ** 2 * self.anchor_grid[i]  # wh
+                    y = torch.cat((xy, wh, conf), 4)
+                z.append(y.view(bs, self.na * nx * ny, self.no))
+
+        return x if self.training else (torch.cat(z, 1),) if self.export else (torch.cat(z, 1), x)
+
+    def _make_grid(self, nx=20, ny=20, i=0):
+        """Generates a mesh grid for anchor boxes with optional compatibility for torch versions < 1.10."""
+        d = self.anchors[i].device
+        t = self.anchors[i].dtype
+        shape = 1, self.na, ny, nx, 2  # grid shape
+        y, x = torch.arange(ny, device=d, dtype=t), torch.arange(nx, device=d, dtype=t)
+        yv, xv = torch.meshgrid(y, x)
+        grid = torch.stack((xv, yv), 2).expand(shape) - 0.5  # add grid offset, i.e. y = 2.0 * x - 0.5
+        anchor_grid = (self.anchors[i] * self.stride[i]).view((1, self.na, 1, 1, 2)).expand(shape)
+        return grid, anchor_grid
+
+
+class Segment(Detect):
+    # YOLOv5 Segment head for segmentation models
+    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
+        """Initializes YOLOv5 Segment head with options for mask count, protos, and channel adjustments."""
+        super().__init__(nc, anchors, ch, inplace)
+        self.nm = nm  # number of masks
+        self.npr = npr  # number of protos
+        self.no = 5 + nc + self.nm  # number of outputs per anchor
+        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+        self.proto = Proto(ch[0], self.npr, self.nm)  # protos
+        self.detect = Detect.forward
+
+    def forward(self, x):
+        """Processes input through the network, returning detections and prototypes; adjusts output based on
+        training/export mode.
+        """
+        p = self.proto(x[0])
+        x = self.detect(self, x)
+        return (x, p) if self.training else (x[0], p) if self.export else (x[0], p, x[1])
+
+
+@dataclass
+class YOLOv8CONFIG:
+    na = 6
+    gd = 0.67 # model depth multiple
+    gw = 0.75 # layer channel multiple
+    ch = [3]
+    ch_mul = 8
+    
+    # BASED ON yolov5m
+    backbone = [
+        [-1, 1, Conv, [64, 6, 2, 2]], # 0-P1/2
+        [-1, 1, Conv, [128, 3, 2]], # 1-P2/4
+        [-1, 3, C3, [128]],
+        [-1, 1, Conv, [256, 3, 2]], # 3-P3/8
+        [-1, 6, C3, [256]],
+        [-1, 1, Conv, [512, 3, 2]], # 5-P4/16
+        [-1, 9, C3, [512]],
+        [-1, 1, Conv, [1024, 3, 2]], # 7-P5/32
+        [-1, 3, C3, [1024]],
+        [-1, 1, SPPF, [1024, 5]], # 9
+    ]
+
+    head= [
+        [-1, 1, Conv, [512, 1, 1]],
+        [-1, 1, nn.Upsample, [None, 2, "nearest"]],
+        [[-1, 6], 1, Concat, [1]], # cat backbone P4
+        [-1, 3, C3, [512, False]], # 13
+
+        [-1, 1, Conv, [256, 1, 1]],
+        [-1, 1, nn.Upsample, [None, 2, "nearest"]],
+        [[-1, 4], 1, Concat, [1]], # cat backbone P3
+        [-1, 3, C3, [256, False]], # 17 (P3/8-small)
+
+        [-1, 1, Conv, [256, 3, 2]],
+        [[-1, 14], 1, Concat, [1]], # cat head P4
+        [-1, 3, C3, [512, False]], # 20 (P4/16-medium)
+
+        [-1, 1, Conv, [512, 3, 2]],
+        [[-1, 10], 1, Concat, [1]], # cat head P5
+        [-1, 3, C3, [1024, False]], # 23 (P5/32-large)
+    ]
+
+class YOLOv5(nn.Module):
+    def __init__(self, nc, task: Union[Detect, Segment]) -> None:
+        super().__init__()
+        self.C = YOLOv8CONFIG
+        self.C.nc = nc
+        self.C.no = self.C.na * (self.C.nc + 5)
+        self.task = task
+        self.m = self._init_model()
+        
+    def _init_model(self):
+        
+        layers, c2 = [], self.C.ch[-1]  # layers, savelist, ch out
+        if self.task not in [Detect, Segment]:
+            raise Exception('ONLY: Detect, Segment')
+        if self.task is Segment:
+            final_layer = [[[17, 20, 23], 1, Segment, [self.C.nc, self.C.na, 32, 256]]]
+        elif self.task is Detect:
+            final_layer = [[[17, 20, 23], 1, Detect, [self.C.nc, self.C.na]]]
+        
+        for i, (f, n, m, args) in enumerate(self.C.backbone + self.C.head + final_layer): #(from, number, module, args)
+            n = max(round(n * self.C.gd), 1) if n > 1 else n  # depth gain
+            
+            if m in [Conv, SPPF, C3, nn.ConvTranspose2d]:
+                c1, c2 = self.C.ch[f], args[0]
+                if c2 != self.C.no:  # if not output
+                    c2 = make_divisible(c2 * self.C.gw, self.C.ch_mul)
+                args = [c1, c2, *args[1:]]
+                if m in [C3]: #{BottleneckCSP, C3, C3TR, C3Ghost, C3x}:
+                    args.insert(2, n)  # number of repeats
+                    n = 1
+            elif m is nn.BatchNorm2d:
+                args = [self.C.ch[f]]
+            elif m is Concat:
+                c2 = sum(self.C.ch[x] for x in f)
+            elif m in [Detect, Segment]:
+                args.append([self.C.ch[x] for x in f])
+                if isinstance(args[1], int):  # number of anchors
+                    args[1] = [list(range(args[1] * 2))] * len(f)
+                if m is Segment:
+                    args[3] = make_divisible(args[3] * self.C.gw, self.C.ch_mul)
+            else:
+                c2 = self.C.ch[f]
+            m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module
+            t = str(m)[8:-2].replace("__main__.", "")  # module type
+            np = sum(x.numel() for x in m_.parameters())  # number params
+            m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
+            layers.append(m_)
+            if i == 0:  # I don't get this
+                self.C.ch = []
+            self.C.ch.append(c2)
+        return nn.Sequential(*layers)#, sorted(save)
+    
+    def forward(self, x):
+        return self.m(x)
+
+
+class YOLOv5Advanced(YOLOv5):
+    
+    def __init__(self, nc, task: Union[Detect, Segment]) -> None:
+        super().__init__(nc, task)
+    
+        self.names = [str(i) for i in range(self.yaml["nc"])]  # default names
+        self.inplace = self.yaml.get("inplace", True)
+
+        # Build strides, anchors
+        m = self.m[-1]  # Detect()
+        if isinstance(m, (Detect, Segment)):
+            s = 256  # 2x min stride
+            m.inplace = self.inplace
+            forward = lambda x: self.forward(x)[0] if isinstance(m, Segment) else self.forward(x)
+            m.stride = torch.tensor([s / x.shape[-2] for x in forward(torch.zeros(1, self.C.ch, s, s))])  # forward
+            check_anchor_order(m)
+            m.anchors /= m.stride.view(-1, 1, 1)
+            self.stride = m.stride
+            self._initialize_biases()  # only run once
+
+        # Init weights, biases
+        initialize_weights(self)
+        
+    def _initialize_biases(self, cf=None):
+        """
+        Initializes biases for YOLOv5's Detect() module, optionally using class frequencies (cf).
+
+        For details see https://arxiv.org/abs/1708.02002 section 3.3.
+        """
+        # cf = torch.bincount(torch.tensor(np.concatenate(dataset.labels, 0)[:, 0]).long(), minlength=nc) + 1.
+        m = self.model[-1]  # Detect() module
+        for mi, s in zip(m.m, m.stride):  # from
+            b = mi.bias.view(m.na, -1)  # conv.bias(255) to (3,85)
+            b.data[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
+            b.data[:, 5 : 5 + m.nc] += (
+                math.log(0.6 / (m.nc - 0.99999)) if cf is None else torch.log(cf / cf.sum())
+            )  # cls
+            mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
+
+    def forward(self, x, augment=False, profile=False, visualize=False):
+        """Performs single-scale or augmented inference and may include profiling or visualization."""
+        if augment:
+            return self._forward_augment(x)  # augmented inference, None
+        return self._forward_once(x, profile, visualize)  # single-scale inference, train
+
+    def _descale_pred(self, p, flips, scale, img_size):
+        """De-scales predictions from augmented inference, adjusting for flips and image size."""
+        if self.inplace:
+            p[..., :4] /= scale  # de-scale
+            if flips == 2:
+                p[..., 1] = img_size[0] - p[..., 1]  # de-flip ud
+            elif flips == 3:
+                p[..., 0] = img_size[1] - p[..., 0]  # de-flip lr
+        else:
+            x, y, wh = p[..., 0:1] / scale, p[..., 1:2] / scale, p[..., 2:4] / scale  # de-scale
+            if flips == 2:
+                y = img_size[0] - y  # de-flip ud
+            elif flips == 3:
+                x = img_size[1] - x  # de-flip lr
+            p = torch.cat((x, y, wh, p[..., 4:]), -1)
+        return p
+    
+    def _clip_augmented(self, y):
+        """Clips augmented inference tails for YOLOv5 models, affecting first and last tensors based on grid points and
+        layer counts.
+        """
+        nl = self.model[-1].nl  # number of detection layers (P3-P5)
+        g = sum(4**x for x in range(nl))  # grid points
+        e = 1  # exclude layer count
+        i = (y[0].shape[1] // g) * sum(4**x for x in range(e))  # indices
+        y[0] = y[0][:, :-i]  # large
+        i = (y[-1].shape[1] // g) * sum(4 ** (nl - 1 - x) for x in range(e))  # indices
+        y[-1] = y[-1][:, i:]  # small
+        return y
+
+    def _forward_augment(self, x):
+        """Performs augmented inference across different scales and flips, returning combined detections."""
+        img_size = x.shape[-2:]  # height, width
+        s = [1, 0.83, 0.67]  # scales
+        f = [None, 3, None]  # flips (2-ud, 3-lr)
+        y = []  # outputs
+        for si, fi in zip(s, f):
+            xi = scale_img(x.flip(fi) if fi else x, si, gs=int(self.stride.max()))
+            yi = self._forward_once(xi)[0]  # forward
+            # cv2.imwrite(f'img_{si}.jpg', 255 * xi[0].cpu().numpy().transpose((1, 2, 0))[:, :, ::-1])  # save
+            yi = self._descale_pred(yi, fi, si, img_size)
+            y.append(yi)
+        y = self._clip_augmented(y)  # clip augmented tails
+        return torch.cat(y, 1), None  # augmented inference, train
+    
+    def forward(self, x, augment=False, profile=False, visualize=False):
+        """Performs single-scale or augmented inference and may include profiling or visualization."""
+        if augment:
+            return self._forward_augment(x)  # augmented inference, None
+        return self._forward_once(x, profile, visualize)  # single-scale inference, train
+
+
+
 if __name__ == '__main__':
 
-    # yolo_v2 = YOLOv2(classes=4)
-    # yolo_creator = YOLOv2TensorCreator('.data/traffic-signs/train')
-    # X, y = yolo_creator(id='00001')
-    # y_loss = y.reshape(1, 13*13, 5, -1)
-    # bbox_truth, confidence_truth, class_truth = y_loss[:,:,:,1:5], y_loss[:,:,:,0], y_loss[:,:,:,5:] 
-    # bbox_pred, confidence_pred, class_pred = yolo_v2(X.unsqueeze(0))
-    # loss_fn = YOLOv2Loss(converter=yolo_creator)
-    # loss = loss_fn(bbox_truth,  bbox_pred, confidence_truth, confidence_pred, class_truth, class_pred)
+    # YOLOv2
+    # training_yolov2(device='mps', epochs=2)
     
-    training_yolov2(device='mps', epochs=2)
+    transformations = transforms.Compose([
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+        transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+    ])
+    
+    train_dataset = YOLOv2Dataset(img_path='.data/traffic-signs/train', transform=transformations)
+
+    # YOLOv5
+    m = YOLOv5(nc=train_dataset.yolo_creator.classes_count, task=Detect)
+    print(m)
